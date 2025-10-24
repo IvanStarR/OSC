@@ -50,7 +50,6 @@ static ssize_t cpuctl_write(struct file *file, const char __user *ubuf,
         return -EFAULT;
     kbuf[len] = '\0';
 
-    /* ожидаем: "<cpu_id> on" или "<cpu_id> off" */
     if (sscanf(kbuf, "%u %7s", &cpu, op) != 2)
         return -EINVAL;
 
@@ -58,7 +57,7 @@ static ssize_t cpuctl_write(struct file *file, const char __user *ubuf,
         return -EINVAL;
 
     if (cpu == 0 && (!strncasecmp(op, "off", 3)))
-        return -EPERM; /* не выключаем boot CPU */
+        return -EPERM;
 
     mutex_lock(&cpuctl_lock);
 
@@ -156,9 +155,7 @@ static void __exit cpuctl_exit(void)
 }
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("YourTeam");
-MODULE_DESCRIPTION("CPU online/offline control via sysfs");
-MODULE_VERSION("1.1");
+MODULE_AUTHOR("ivis");
 
 module_init(cpuctl_init);
 module_exit(cpuctl_exit);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/module.h>
 #include <linux/miscdevice.h>
 #include <linux/fs.h>
@@ -12,14 +11,12 @@
 
 static DEFINE_MUTEX(hwp_lock);
 
-/* --- Статистика для отчёта (cat /dev/hwpoison) --- */
 static atomic64_t total_poisoned_pages   = ATOMIC64_INIT(0);
 static atomic64_t last_req_pages         = ATOMIC64_INIT(0);
 static atomic64_t last_ok_pages          = ATOMIC64_INIT(0);
 static atomic64_t total_block_offlined   = ATOMIC64_INIT(0);
 static atomic64_t total_block_onlined    = ATOMIC64_INIT(0);
 
-/* ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===== */
 
 static int sysfs_write_str(const char *path, const char *s, size_t len)
 {
@@ -59,9 +56,7 @@ static int sysfs_block_set_state(unsigned long blk, bool online)
     return sysfs_write_str(path, val, strlen(val));
 }
 
-/* ===== ОСНОВНАЯ ЛОГИКА ===== */
 
-/* Мягко «отравить» примерно mib Мибибайт. */
 static int soft_poison_mebibytes(unsigned long mib, unsigned long *ok_pages)
 {
     unsigned long target_pages = (mib * 1024UL * 1024UL) >> PAGE_SHIFT;
@@ -102,7 +97,6 @@ static int soft_poison_mebibytes(unsigned long mib, unsigned long *ok_pages)
     if (ok_pages)
         *ok_pages = done_ok;
 
-    /* даже если не добрали до цели — возвращаем 0: это ожидаемо */
     return 0;
 }
 
@@ -123,13 +117,6 @@ static ssize_t hwp_write(struct file *file, const char __user *ubuf,
 
     mutex_lock(&hwp_lock);
 
-    /* Форматы:
-     *  soft <MiB>
-     *  softpfn <PFN>
-     *  hard <PFN>
-     *  block off <N>
-     *  block on  <N>
-     */
     if (sscanf(kbuf, "soft %lu", &mib) == 1) {
         unsigned long okp = 0;
         pr_info(DRV_NAME ": soft poisoning ~%lu MiB (PAGE_SIZE=%lu)\n",
@@ -223,7 +210,7 @@ static struct miscdevice hwp_dev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name  = DRV_NAME,
     .fops  = &hwp_fops,
-    .mode  = 0600, /* root-only */
+    .mode  = 0600, 
 };
 
 static int __init hwp_init(void)
@@ -244,9 +231,7 @@ static void __exit hwp_exit(void)
 }
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("YourTeam");
-MODULE_DESCRIPTION("HWPoison control: soft/hard PFN + memory-block offline via sysfs");
-MODULE_VERSION("1.2");
+MODULE_AUTHOR("ivis");
 
 module_init(hwp_init);
 module_exit(hwp_exit);
