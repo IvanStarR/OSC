@@ -1,4 +1,3 @@
-# Makefile for cpuctl
 obj-m += cpuctl.o
 
 KDIR ?= /lib/modules/$(shell uname -r)/build

@@ -14,5 +14,8 @@ echo "N on"  | sudo tee /dev/cpuctl
 
 cat /dev/cpuctl
 
+htop
 
 journalctl -k -n 100
+
+
