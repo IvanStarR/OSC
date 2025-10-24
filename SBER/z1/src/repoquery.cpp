@@ -3,7 +3,8 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-
+#include <sstream>
+#include <cctype> 
 #include "exec.hpp"
 
 static std::string strip_to_name(const std::string& nevra) {
