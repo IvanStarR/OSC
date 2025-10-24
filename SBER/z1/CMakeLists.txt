@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(rpm_graph_fast LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
@@ -11,6 +11,10 @@ FetchContent_Declare(fmt
   GIT_TAG 10.2.1
 )
 FetchContent_MakeAvailable(fmt)
+
+find_package(TinyXML2 REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBSOLV REQUIRED IMPORTED_TARGET libsolv libsolvext)
 
 # Подтягиваем spdlog
 FetchContent_Declare(spdlog
@@ -28,10 +32,16 @@ add_executable(rpm_graph_fast
   src/thread_pool.cpp
   src/cache.cpp
   src/repoquery.cpp
+  src/solv_backend.cpp 
   src/graph.cpp
   src/json_writer.cpp
 )
-target_include_directories(rpm_graph_fast PRIVATE include)
 
-# ВАЖНО: для header-only используем специальную цель:
-target_link_libraries(rpm_graph_fast PRIVATE spdlog::spdlog_header_only fmt::fmt)
+target_include_directories(rpm_graph_fast PRIVATE include)
+target_link_libraries(rpm_graph_fast
+  PRIVATE
+    pdlog::spdlog_header_only 
+    fmt::fmt
+    PkgConfig::LIBSOLV
+    TinyXML2::TinyXML2
+)
