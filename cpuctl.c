@@ -7,9 +7,33 @@
 #include <linux/device.h>
 #include <linux/cpu.h>
 #include <linux/cpumask.h>
+#include <linux/err.h>
 
 #define DRV_NAME "cpuctl"
 static DEFINE_MUTEX(cpuctl_lock);
+
+static int sysfs_cpu_online_write(unsigned int cpu, bool online)
+{
+    char path[128];
+    struct file *f;
+    loff_t pos = 0;
+    char val = online ? '1' : '0';
+    ssize_t w;
+
+    snprintf(path, sizeof(path),
+             "/sys/devices/system/cpu/cpu%u/online", cpu);
+
+    f = filp_open(path, O_WRONLY, 0);
+    if (IS_ERR(f))
+        return PTR_ERR(f);
+
+    w = kernel_write(f, &val, 1, &pos);
+    filp_close(f, NULL);
+
+    if (w < 0)
+        return (int)w;
+    return (w == 1) ? 0 : -EIO;
+}
 
 static ssize_t cpuctl_write(struct file *file, const char __user *ubuf,
                             size_t len, loff_t *ppos)
@@ -17,7 +41,6 @@ static ssize_t cpuctl_write(struct file *file, const char __user *ubuf,
     char kbuf[64];
     unsigned int cpu;
     char op[8] = {0};
-    struct device *dev;
     int ret = 0;
 
     if (len == 0 || len >= sizeof(kbuf))
@@ -27,49 +50,36 @@ static ssize_t cpuctl_write(struct file *file, const char __user *ubuf,
         return -EFAULT;
     kbuf[len] = '\0';
 
-    /* ожидаем формат: "<cpu_id> on" или "<cpu_id> off" */
+    /* ожидаем: "<cpu_id> on" или "<cpu_id> off" */
     if (sscanf(kbuf, "%u %7s", &cpu, op) != 2)
         return -EINVAL;
 
     if (!cpu_possible(cpu))
         return -EINVAL;
 
-    if (cpu == 0 && (!strncmp(op, "off", 3) || !strncmp(op, "OFF", 3)))
+    if (cpu == 0 && (!strncasecmp(op, "off", 3)))
         return -EPERM; /* не выключаем boot CPU */
-
-    dev = get_cpu_device(cpu);
-    if (!dev)
-        return -ENODEV;
 
     mutex_lock(&cpuctl_lock);
 
     if (!strncasecmp(op, "off", 3)) {
-        if (!cpu_online(cpu)) {
-            pr_info(DRV_NAME ": cpu%u already offline\n", cpu);
-            goto out_ok;
-        }
-        pr_info(DRV_NAME ": offlining cpu%u...\n", cpu);
-        ret = device_offline(dev); /* корректный hotplug путь в 6.x */
+        pr_info(DRV_NAME ": offlining cpu%u via sysfs...\n", cpu);
+        ret = sysfs_cpu_online_write(cpu, false);
         if (ret)
-            pr_err(DRV_NAME ": device_offline(cpu%u) failed: %d\n", cpu, ret);
+            pr_err(DRV_NAME ": sysfs write off cpu%u failed: %d\n", cpu, ret);
         else
-            pr_info(DRV_NAME ": cpu%u is now offline\n", cpu);
+            pr_info(DRV_NAME ": cpu%u is now offline (requested)\n", cpu);
     } else if (!strncasecmp(op, "on", 2)) {
-        if (cpu_online(cpu)) {
-            pr_info(DRV_NAME ": cpu%u already online\n", cpu);
-            goto out_ok;
-        }
-        pr_info(DRV_NAME ": onlining cpu%u...\n", cpu);
-        ret = device_online(dev);
+        pr_info(DRV_NAME ": onlining cpu%u via sysfs...\n", cpu);
+        ret = sysfs_cpu_online_write(cpu, true);
         if (ret)
-            pr_err(DRV_NAME ": device_online(cpu%u) failed: %d\n", cpu, ret);
+            pr_err(DRV_NAME ": sysfs write on cpu%u failed: %d\n", cpu, ret);
         else
-            pr_info(DRV_NAME ": cpu%u is now online\n", cpu);
+            pr_info(DRV_NAME ": cpu%u is now online (requested)\n", cpu);
     } else {
         ret = -EINVAL;
     }
 
-out_ok:
     mutex_unlock(&cpuctl_lock);
     return ret ? ret : (ssize_t)len;
 }
@@ -77,7 +87,6 @@ out_ok:
 static ssize_t cpuctl_read(struct file *file, char __user *ubuf,
                            size_t len, loff_t *ppos)
 {
-    /* простой отчёт о статусе */
     char *buf;
     int cpu, n = 0, total = num_possible_cpus(), online = 0;
 
@@ -126,7 +135,7 @@ static struct miscdevice cpuctl_dev = {
     .minor = MISC_DYNAMIC_MINOR,
     .name  = DRV_NAME,
     .fops  = &cpuctl_fops,
-    .mode  = 0600, /* root-only; меняйте udev-правилами при необходимости */
+    .mode  = 0600,
 };
 
 static int __init cpuctl_init(void)
@@ -148,8 +157,8 @@ static void __exit cpuctl_exit(void)
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("YourTeam");
-MODULE_DESCRIPTION("CPU online/offline control via misc device");
-MODULE_VERSION("1.0");
+MODULE_DESCRIPTION("CPU online/offline control via sysfs");
+MODULE_VERSION("1.1");
 
 module_init(cpuctl_init);
 module_exit(cpuctl_exit);
