@@ -40,7 +40,7 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
   auto wal = std::filesystem::path(dir)/"wal"/"000001.wal";
   REQUIRE(std::filesystem::exists(wal));
 
-  // Разберём файл и посчитаем количество полноценных записей
+  // Разберём файл: найдём паддинг последней записи, чтобы резать внутри трейлера
   int fd = ::open(wal.c_str(), O_RDONLY);
   REQUIRE(fd >= 0);
 
@@ -49,16 +49,16 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
   REQUIRE(::read(fd, header, sizeof(header)) == (ssize_t)sizeof(header));
 
   size_t records = 0;
-  off_t pos = ::lseek(fd, 0, SEEK_CUR);
-  (void)pos;
+  uint64_t last_used = 0;
+  uint64_t last_pad  = 0;
 
   while (true) {
     WalRecordMeta m{};
     ssize_t r = ::read(fd, &m, sizeof(m));
-    if (r == 0) break;
+    if (r == 0) break;                      // EOF
     REQUIRE(r == (ssize_t)sizeof(m));
 
-    // прочитаем тело
+    // тело
     if (m.klen) {
       std::vector<char> kb(m.klen);
       REQUIRE(::read(fd, kb.data(), m.klen) == (ssize_t)m.klen);
@@ -72,24 +72,27 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
     WalRecordTrailer tr{};
     REQUIRE(::read(fd, &tr, sizeof(tr)) == (ssize_t)sizeof(tr));
 
-    // сдвиг на паддинг
-    const uint64_t used = sizeof(m) + m.klen + m.vlen + sizeof(WalRecordTrailer);
+    // вычислим used/pad для этой записи
+    const uint64_t used = sizeof(WalRecordMeta) + m.klen + m.vlen + sizeof(WalRecordTrailer);
     const uint64_t rem  = used % WalSegmentConst::BLOCK_SIZE;
-    if (rem) {
-      ::lseek(fd, (off_t)(WalSegmentConst::BLOCK_SIZE - rem), SEEK_CUR);
-    }
+    const uint64_t pad  = rem ? (WalSegmentConst::BLOCK_SIZE - rem) : 0;
 
+    last_used = used;
+    last_pad  = pad;
     ++records;
+
+    if (pad) ::lseek(fd, (off_t)pad, SEEK_CUR);
   }
   ::close(fd);
 
   // sanity: в журнале как минимум две записи
   REQUIRE(records >= 2);
 
-  // повредим самый хвост: минус 8 байт (середина трейлера последней записи)
+  // Обрезаем так, чтобы попасть ВНУТРЬ трейлера последней записи:
+  // ...[meta|key|value|trailer]pad  -> отрезаем pad+4 байта
   auto sz = std::filesystem::file_size(wal);
-  REQUIRE(sz > WalSegmentConst::HEADER_SIZE + 8);
-  REQUIRE(::truncate(wal.c_str(), (off_t)(sz - 8)) == 0);
+  REQUIRE(sz >= WalSegmentConst::HEADER_SIZE + last_used + last_pad);
+  REQUIRE(::truncate(wal.c_str(), (off_t)(sz - (last_pad + 4))) == 0);
 
   // Перезапуск и проверка
   {
