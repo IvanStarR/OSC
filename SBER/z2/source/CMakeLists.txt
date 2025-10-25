@@ -1,5 +1,5 @@
 module(NAME core TYPE STATIC
     DEPENDENCIES
-    spdlog::spdlog 
+    spdlog::spdlog
     fmt::fmt
     xxhash::xxhash)
