@@ -1,17 +1,17 @@
 #pragma once
-#include <cstdint>
-#include <optional>
 #include <string>
-#include <string_view>
+#include <optional>
 #include <vector>
+#include <string_view>
+#include <cstdint>
 
 namespace uringkv {
 
 struct KVOptions {
-  std::string path = "./data"; 
-
-  bool use_uring = false;
-  unsigned uring_queue_depth = 256;
+  std::string path = "./data";      // база каталога
+  bool        use_uring = false;    // опционально io_uring для WAL
+  unsigned    uring_queue_depth = 256;
+  uint64_t    wal_max_segment_bytes = 64ull * 1024 * 1024; // РАЗМЕР СЕГМЕНТА WAL
 };
 
 struct RangeItem {
@@ -21,11 +21,11 @@ struct RangeItem {
 
 class KV {
 public:
-  explicit KV(const KVOptions &opts);
+  explicit KV(const KVOptions& opts);
   ~KV();
 
-  KV(const KV &) = delete;
-  KV &operator=(const KV &) = delete;
+  KV(const KV&) = delete; 
+  KV& operator=(const KV&) = delete;
 
   bool put(std::string_view key, std::string_view value);
   std::optional<std::string> get(std::string_view key);
@@ -35,8 +35,8 @@ public:
   bool init_storage_layout();
 
 private:
-  struct Impl;
-  Impl *p_;
+  struct Impl; 
+  Impl* p_;
 };
 
 } // namespace uringkv
