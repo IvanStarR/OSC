@@ -178,18 +178,6 @@ if(URINGKV_ENABLE_TESTS)
 endif()
 
 
-find_package(PkgConfig QUIET)
-pkg_check_modules(LIBURING QUIET liburing)
-
-if (LIBURING_FOUND)
-  add_library(Liburing::Liburing INTERFACE IMPORTED)
-  target_include_directories(Liburing::Liburing INTERFACE ${LIBURING_INCLUDE_DIRS})
-  target_link_libraries(Liburing::Liburing INTERFACE ${LIBURING_LIBRARIES})
-  set(LIBURING_TARGET Liburing::Liburing)
-  add_compile_definitions(HAVE_LIBURING=1)
-else()
-  set(LIBURING_TARGET "")
-endif()
 
 
 add_subdirectory(source)

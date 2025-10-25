@@ -26,7 +26,7 @@ sudo dnf -y install cmake git pkgconf-pkg-config liburing-devel
 Build (Debug)
   mkdir -p build
   cd build
-  cmake -DCMAKE_BUILD_TYPE=Debug ..
+  cmake -DCMAKE_BUILD_TYPE=Debug ..    #fetch может долго качать(от 40 сек)
   make -j
 
 Binary location (from build dir)
