@@ -23,10 +23,11 @@
 namespace uringkv {
 
 struct KV::Impl {
-  KVOptions opts;
-  std::string wal_dir;
-  std::string sst_dir;
+  KVOptions    opts;
+  std::string  wal_dir;
+  std::string  sst_dir;
 
+  // WAL (инициализируется в ctor по реальным опциям)
   WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024, FlushMode::FDATASYNC};
 
   // MemTable: key -> value / tombstone
@@ -37,17 +38,17 @@ struct KV::Impl {
   std::vector<std::string> ssts;
   uint64_t next_sst_index = 0;
 
-  // Table cache (LRU)
+  // LRU-кэш таблиц
   TableCache tcache{64};
 
-  // Background compaction
-  std::thread bg_compactor;
+  // Фоновая компактация
+  std::thread             bg_compactor;
   std::condition_variable cv;
-  bool need_compact = false;
-  bool stopping = false;
+  bool                    need_compact = false;
+  bool                    stopping     = false;
 
-  std::mutex mu;
-  std::atomic<uint64_t> seq{1};
+  std::mutex              mu;
+  std::atomic<uint64_t>   seq{1};
 
   // ---- helpers ----
 
@@ -64,32 +65,32 @@ struct KV::Impl {
       }
       ::closedir(d);
     }
-    // fsync на директории wal
+    // fsync каталога wal
     int dfd = ::open(wal_dir.c_str(), O_RDONLY | O_DIRECTORY);
     if (dfd >= 0) { (void)::fsync(dfd); ::close(dfd); }
 
-    // открыть новый WAL с актуальными опциями (включая flush_mode)
+    // открыть новый WAL с актуальными опциями
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes, opts.flush_mode);
   }
 
-  // One L0 compaction pass (can be called from background thread)
+  // Одна итерация L0-компактации
   bool compact_l0_once() {
-    // Step 1: check threshold & snapshot input under lock
+    // Шаг 1: снимок входа под локом
     std::vector<std::string> input;
     uint64_t new_idx = 0;
     {
       std::unique_lock<std::mutex> lk(mu);
-      if (stopping) return true; // если нас останавливают — выходим тихо
+      if (stopping) return true;
       if (ssts.size() < opts.l0_compact_threshold) return true;
-      input = ssts;
+      input   = ssts;
       new_idx = next_sst_index + 1;
-      next_sst_index = new_idx; // reserve name
+      next_sst_index = new_idx; // бронируем имя
     }
 
     spdlog::info("BG-Compaction: merging {} SST files", input.size());
 
-    // Step 2: build final view outside lock (newer overrides older)
+    // Шаг 2: строим финальный view (вне лока): «новее» перекрывает «старее»
     std::unordered_map<std::string, std::optional<std::string>> view;
     view.reserve(1024);
 
@@ -98,6 +99,7 @@ struct KV::Impl {
       if (!r.good()) continue;
       auto items = r.scan(std::string_view{}, std::string_view{});
       for (auto& kv : items) {
+        // если ключ уже встречался (из более нового файла) — пропускаем
         if (view.find(kv.first) != view.end()) continue;
         view.emplace(kv.first, kv.second);
       }
@@ -105,13 +107,14 @@ struct KV::Impl {
 
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(view.size());
-    for (auto& [k, v] : view) if (v.has_value()) entries.emplace_back(k, v);
+    for (auto& [k, v] : view)
+      if (v.has_value()) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
               [](const auto& a, const auto& b){ return a.first < b.first; });
 
-    // Step 3: write new SST
-    auto out_name = sst_name(new_idx);
-    auto out_path = join_path(sst_dir, out_name);
+    // Шаг 3: пишем новый SST
+    const auto out_name = sst_name(new_idx);
+    const auto out_path = join_path(sst_dir, out_name);
 
     SstWriter wr(out_path);
     if (!wr.write_sorted(entries)) {
@@ -119,10 +122,10 @@ struct KV::Impl {
       return false;
     }
 
-    // Step 4: commit result under lock, remove old, reset cache
+    // Шаг 4: коммит под локом, удаляем старые, сбрасываем кэш
     {
       std::unique_lock<std::mutex> lk(mu);
-      if (stopping) return true; // при остановке просто не коммитим ничего тяжёлого
+      if (stopping) return true;
 
       std::vector<std::string> new_list;
       new_list.reserve(ssts.size()+1);
@@ -165,9 +168,9 @@ struct KV::Impl {
     std::sort(entries.begin(), entries.end(),
               [](const auto& a, const auto& b){ return a.first < b.first; });
 
-    uint64_t idx = next_sst_index + 1;
-    auto name = sst_name(idx);
-    auto path = join_path(sst_dir, name);
+    const uint64_t idx  = next_sst_index + 1;
+    const auto     name = sst_name(idx);
+    const auto     path = join_path(sst_dir, name);
 
     SstWriter wr(path);
     if (!wr.write_sorted(entries)) {
@@ -197,9 +200,9 @@ struct KV::Impl {
       std::sort(entries.begin(), entries.end(),
                 [](const auto& a, const auto& b){ return a.first < b.first; });
 
-      uint64_t idx = next_sst_index + 1;
-      auto name = sst_name(idx);
-      auto path = join_path(sst_dir, name);
+      const uint64_t idx  = next_sst_index + 1;
+      const auto     name = sst_name(idx);
+      const auto     path = join_path(sst_dir, name);
 
       SstWriter wr(path);
       if (!wr.write_sorted(entries)) {
@@ -215,7 +218,7 @@ struct KV::Impl {
       spdlog::info("Flushed MemTable to {} (final)", path);
     }
 
-    // Если фон выключен — делаем одну финальную компакцию синхронно
+    // Синхронная компактация — только если фон выключен
     if (!opts.background_compaction) {
       (void)compact_l0_once();
     }
@@ -228,26 +231,29 @@ struct KV::Impl {
   void compactor_thread() {
     std::unique_lock<std::mutex> lk(mu);
     while (true) {
-      cv.wait(lk, [&]{ return stopping || need_compact; });
+      // watchdog, чтобы не залипать, даже если notify не пришёл
+      cv.wait_for(lk, std::chrono::milliseconds(200),
+                  [&]{ return stopping || need_compact; });
       if (stopping) break;
+      if (!need_compact) continue;
       need_compact = false;
+
       lk.unlock();
       (void)compact_l0_once();
       lk.lock();
     }
   }
 
-  // Аккуратно остановить фон, если он включён и поток создан
+  // Корректно остановить фон, если он есть
   void stop_bg_if_any() {
     if (!opts.background_compaction) return;
     {
       std::lock_guard<std::mutex> lk(mu);
       stopping = true;
-      cv.notify_all();
+      need_compact = false;
     }
-    if (bg_compactor.joinable()) {
-      bg_compactor.join();
-    }
+    cv.notify_all();
+    if (bg_compactor.joinable()) bg_compactor.join();
   }
 
   // init
@@ -260,15 +266,15 @@ struct KV::Impl {
 
     tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
 
-    // ВАЖНО: создаём WAL с учётом opts.flush_mode
+    // Создаём WAL с учётом opts.flush_mode/use_uring
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes, opts.flush_mode);
 
-    // Прочитать уже имеющиеся SST и вычислить next_sst_index
+    // Прочитать имеющиеся SST и вычислить next_sst_index
     ssts.clear();
     for (auto& name : list_sst_sorted(sst_dir)) {
       ssts.push_back(join_path(sst_dir, name));
-      uint64_t idx = std::stoull(name.substr(0, 6));
+      const uint64_t idx = std::stoull(name.substr(0, 6));
       next_sst_index = std::max(next_sst_index, idx);
     }
     uint64_t cur = 0;
@@ -280,10 +286,10 @@ struct KV::Impl {
     if (rd.good()) {
       size_t replayed = 0;
       while (auto it = rd.next()) {
-        if (it->flags == 1) {
+        if (it->flags == WAL_FLAG_PUT) {
           mem[it->key] = it->value;
           mem_bytes += it->key.size() + it->value.size();
-        } else if (it->flags == 2) {
+        } else if (it->flags == WAL_FLAG_DEL) {
           mem[it->key] = std::nullopt;
           mem_bytes += it->key.size();
         }
@@ -298,9 +304,7 @@ struct KV::Impl {
     }
   }
 
-  ~Impl() {
-    stop_bg_if_any();
-  }
+  ~Impl() { stop_bg_if_any(); }
 };
 
 // ===== KV API =====
@@ -310,10 +314,10 @@ KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 KV::~KV() {
   if (!p_) return;
 
-  // СНАЧАЛА останавливаем фон (чтобы не конкурировал за mu в финальном флаше)
+  // 1) сперва останавливаем фон (чтобы он не конкурировал за mu)
   p_->stop_bg_if_any();
 
-  // Теперь финальный flush под локом
+  // 2) финальный flush под локом (опционально)
   {
     std::lock_guard lk(p_->mu);
     if (p_->opts.final_flush_on_close) {
@@ -335,7 +339,7 @@ bool KV::init_storage_layout() {
 
 bool KV::put(std::string_view key, std::string_view value) {
   std::lock_guard lk(p_->mu);
-  uint64_t s = p_->seq.fetch_add(1);
+  const uint64_t s = p_->seq.fetch_add(1);
   if (!p_->wal.append_put(s, key, value)) return false;
 
   auto& slot = p_->mem[std::string(key)];
@@ -369,7 +373,7 @@ std::optional<std::string> KV::get(std::string_view key) {
 
 bool KV::del(std::string_view key) {
   std::lock_guard lk(p_->mu);
-  uint64_t s = p_->seq.fetch_add(1);
+  const uint64_t s = p_->seq.fetch_add(1);
   if (!p_->wal.append_del(s, key)) return false;
 
   auto& slot = p_->mem[std::string(key)];
