@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <sys/uio.h> 
 
 namespace uringkv {
 
