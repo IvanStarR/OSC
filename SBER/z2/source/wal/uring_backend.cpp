@@ -1,16 +1,13 @@
 #include "wal/uring_backend.hpp"
-#include <sys/uio.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstring>
-
 #ifdef __has_include
 #  if __has_include(<liburing.h>)
 #    include <liburing.h>
 #    define URKV_HAVE_URING 1
 #  endif
 #endif
-
 #include <spdlog/spdlog.h>
 
 namespace uringkv {
@@ -25,16 +22,21 @@ struct UringBackend::Impl {
   unsigned submit_batch = 16;
 
   // fixed files
-  bool     files_registered = false;
-  int      registered_fd    = -1;    // last registered fd stored at index 0
+  bool files_registered = false;
+  int  registered_fd    = -1;
 
-  explicit Impl(unsigned qd) {
-    if (io_uring_queue_init(qd ? qd : 256, &ring, 0) == 0) ok = true;
-  }
-  ~Impl(){
-    if (ok) {
-      io_uring_queue_exit(&ring);
+  explicit Impl(unsigned qd, bool sqpoll) {
+    unsigned flags = 0;
+#ifdef IORING_SETUP_SQPOLL
+    if (sqpoll) flags |= IORING_SETUP_SQPOLL;
+#endif
+    if (io_uring_queue_init(qd ? qd : 256, &ring, flags) == 0) ok = true;
+    if (ok && (flags & IORING_SETUP_SQPOLL)) {
+      spdlog::info("io_uring: SQPOLL enabled");
     }
+  }
+  ~Impl() {
+    if (ok) io_uring_queue_exit(&ring);
   }
 
   bool ensure_fixed_file(int fd) {
@@ -59,29 +61,25 @@ struct UringBackend::Impl {
     return true;
   }
 #else
-  explicit Impl(unsigned) {}
+  explicit Impl(unsigned, bool) {}
   ~Impl() = default;
 #endif
 };
 
-UringBackend::UringBackend(unsigned qd) {
+UringBackend::UringBackend(unsigned qd, bool sqpoll) {
 #if URKV_HAVE_URING
-  p_ = new Impl(qd);
+  p_ = new Impl(qd, sqpoll);
   if (!p_->ok) { delete p_; p_ = nullptr; }
 #else
-  (void)qd;
+  (void)qd; (void)sqpoll;
   p_ = nullptr;
 #endif
 }
-
 UringBackend::~UringBackend(){ delete p_; }
-
 UringBackend::UringBackend(UringBackend&& o) noexcept { p_ = o.p_; o.p_ = nullptr; }
 UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
-  if (this != &o) { delete p_; p_ = o.p_; o.p_ = nullptr; }
-  return *this;
+  if (this != &o) { delete p_; p_ = o.p_; o.p_ = nullptr; } return *this;
 }
-
 bool UringBackend::initialized() const noexcept { return p_ != nullptr; }
 
 bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
@@ -89,13 +87,11 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
   if (!p_ || !p_->ok) return false;
 
   if (!p_->ensure_fixed_file(fd)) {
-    // fallback: обычный путь через submit без fixed files
     io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
     if (!sqe) return false;
     io_uring_prep_writev(sqe, fd, const_cast<struct ::iovec*>(iov), iovcnt, 0);
     int submitted = io_uring_submit(&p_->ring);
     if (submitted < 0) return false;
-
     io_uring_cqe* cqe = nullptr;
     int ret = io_uring_wait_cqe(&p_->ring, &cqe);
     if (ret < 0) return false;
@@ -104,10 +100,8 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
     return ok;
   }
 
-  // batched submit with fixed file
   io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
   if (!sqe) {
-    // flush pending and retry once
     int s = io_uring_submit(&p_->ring);
     if (s < 0) return false;
     p_->pending = 0;
@@ -115,15 +109,13 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
     if (!sqe) return false;
   }
 
-  io_uring_prep_writev(sqe, /*fd*/0, const_cast<struct ::iovec*>(iov), iovcnt, 0);
+  io_uring_prep_writev(sqe, /*fixed index*/0, const_cast<struct ::iovec*>(iov), iovcnt, 0);
   sqe->flags |= IOSQE_FIXED_FILE;
-
   p_->pending++;
 
   if (p_->pending >= p_->submit_batch) {
     int s = io_uring_submit(&p_->ring);
     if (s < 0) return false;
-    // wait for all just submitted
     for (int i=0;i<s;++i) {
       io_uring_cqe* cqe = nullptr;
       int ret = io_uring_wait_cqe(&p_->ring, &cqe);
@@ -135,8 +127,7 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
   }
   return true;
 #else
-  (void)fd; (void)iov; (void)iovcnt;
-  return false;
+  (void)fd; (void)iov; (void)iovcnt; return false;
 #endif
 }
 
@@ -144,7 +135,6 @@ bool UringBackend::fsync(int fd) {
 #if URKV_HAVE_URING
   if (!p_ || !p_->ok) return false;
 
-  // перед fsync — принудительно сабмитим все накопленные SQE и ждём
   if (p_->pending > 0) {
     int s = io_uring_submit(&p_->ring);
     if (s < 0) return false;
@@ -174,7 +164,7 @@ bool UringBackend::fsync(int fd) {
 
   io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
   if (!sqe) return false;
-  io_uring_prep_fsync(sqe, /*fd*/0, IORING_FSYNC_DATASYNC);
+  io_uring_prep_fsync(sqe, /*fixed index*/0, IORING_FSYNC_DATASYNC);
   sqe->flags |= IOSQE_FIXED_FILE;
 
   int s = io_uring_submit(&p_->ring);
@@ -187,8 +177,7 @@ bool UringBackend::fsync(int fd) {
   io_uring_cqe_seen(&p_->ring, cqe);
   return ok;
 #else
-  (void)fd;
-  return false;
+  (void)fd; return false;
 #endif
 }
 

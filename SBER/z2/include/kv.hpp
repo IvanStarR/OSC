@@ -14,8 +14,7 @@ enum class FlushMode : uint8_t {
   SYNC_FILE_RANGE // sync_file_range(SFR) + периодический fdatasync
 };
 
-// Политика компакции (поддерживаем size-tiered; leveled — заглушка до итерации
-// 4)
+// Политика компакции
 enum class CompactionPolicy : uint8_t { SIZE_TIERED, LEVELED };
 
 struct KVOptions {
@@ -24,11 +23,15 @@ struct KVOptions {
   // io_uring
   bool use_uring = false;
   unsigned uring_queue_depth = 256;
+  bool uring_sqpoll = false;            // НОВОЕ: включить SQPOLL (off по умолчанию)
 
   // WAL/SST
   uint64_t wal_max_segment_bytes = 64ull * 1024 * 1024;
   uint64_t sst_flush_threshold_bytes = 4ull * 1024 * 1024;
-  bool final_flush_on_close = true;
+  bool     final_flush_on_close = true;
+
+  // НОВОЕ: порог байт для group-commit (после записи примерно этого объёма делаем fsync)
+  uint64_t wal_group_commit_bytes = (1ull << 20); // 1 MiB по умолчанию
 
   // Табличный кэш
   size_t table_cache_capacity = 64;
