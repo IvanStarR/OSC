@@ -1,5 +1,0 @@
-if(EXISTS "/home/ivis/OpenScaler/ScalaR/SBER/z2/build/tests/smoke.test_tests-b12d07c.cmake")
-  include("/home/ivis/OpenScaler/ScalaR/SBER/z2/build/tests/smoke.test_tests-b12d07c.cmake")
-else()
-  add_test(smoke.test_NOT_BUILT-b12d07c smoke.test_NOT_BUILT-b12d07c)
-endif()
