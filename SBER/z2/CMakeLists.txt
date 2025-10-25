@@ -195,10 +195,11 @@ if (NOT liburing_POPULATED)
     endif()
 
     add_library(liburing_external STATIC ${LIBURING_SOURCES})
-    target_include_directories(liburing_external PUBLIC
-      "${liburing_SOURCE_DIR}/src/include"   # <liburing.h>
-      "${liburing_SOURCE_DIR}/src"
-    )
+   target_include_directories(liburing_external PUBLIC
+  "${liburing_SOURCE_DIR}/src/include"   # <liburing.h>, <liburing/compat.h>
+  "${liburing_SOURCE_DIR}/include"       # на всякий случай (некоторые релизы)
+  "${liburing_SOURCE_DIR}/src"
+)
     target_compile_definitions(liburing_external PRIVATE _GNU_SOURCE)
     set_target_properties(liburing_external PROPERTIES POSITION_INDEPENDENT_CODE ON)
   endif()
