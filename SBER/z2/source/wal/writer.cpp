@@ -1,4 +1,3 @@
-// source/wal/writer.cpp
 #include "wal/writer.hpp"
 #include "wal/record.hpp"
 #include "wal/segment.hpp"
