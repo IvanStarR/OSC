@@ -9,6 +9,14 @@
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/spdlog-build/CMakeFiles/test.dir
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/spdlog-build/CMakeFiles/edit_cache.dir
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/spdlog-build/CMakeFiles/rebuild_cache.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/CMakeFiles/test.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/CMakeFiles/edit_cache.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/CMakeFiles/rebuild_cache.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/src/CMakeFiles/Catch2.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/src/CMakeFiles/Catch2WithMain.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/src/CMakeFiles/test.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/src/CMakeFiles/edit_cache.dir
+/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-build/src/CMakeFiles/rebuild_cache.dir
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/source/CMakeFiles/uringkv.core.dir
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/source/CMakeFiles/test.dir
 /home/ivis/OpenScaler/ScalaR/SBER/z2/build/source/CMakeFiles/edit_cache.dir

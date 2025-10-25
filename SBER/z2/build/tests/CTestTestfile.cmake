@@ -4,4 +4,4 @@
 # 
 # This file includes the relevant testing commands required for 
 # testing this directory and lists subdirectories to be tested as well.
-include("/home/ivis/OpenScaler/ScalaR/SBER/z2/build/tests/smoke.test_include-b12d07c.cmake")
+include("/home/ivis/OpenScaler/ScalaR/SBER/z2/build/tests/smoke.test-b12d07c_include.cmake")

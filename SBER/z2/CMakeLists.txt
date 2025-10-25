@@ -126,6 +126,16 @@ GIT_TAG v1.13.0
 )
 FetchContent_MakeAvailable(spdlog)
 
+option(URINGKV_ENABLE_TESTS "Build tests" ON)
+
+if (URINGKV_ENABLE_TESTS)
+  FetchContent_Declare(
+    catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.5.3
+  )
+  FetchContent_MakeAvailable(catch2)
+endif()
 
 
 add_subdirectory(source)

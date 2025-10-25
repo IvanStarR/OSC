@@ -564,3 +564,43 @@ events:
         
       exitCode: 0
 ...
+
+---
+events:
+  -
+    kind: "try_compile-v1"
+    backtrace:
+      - "/usr/share/cmake-3.28/Modules/Internal/CheckSourceCompiles.cmake:101 (try_compile)"
+      - "/usr/share/cmake-3.28/Modules/Internal/CheckCompilerFlag.cmake:18 (cmake_check_source_compiles)"
+      - "/usr/share/cmake-3.28/Modules/CheckCXXCompilerFlag.cmake:34 (cmake_check_compiler_flag)"
+      - "build/_deps/catch2-src/CMake/CatchMiscFunctions.cmake:12 (check_cxx_compiler_flag)"
+      - "build/_deps/catch2-src/CMake/CatchMiscFunctions.cmake:119 (add_cxx_flag_if_supported_to_targets)"
+      - "build/_deps/catch2-src/src/CMakeLists.txt:352 (add_build_reproducibility_settings)"
+    checks:
+      - "Performing Test HAVE_FLAG__ffile_prefix_map__home_ivis_OpenScaler_ScalaR_SBER_z2_build__deps_catch2_src__"
+    directories:
+      source: "/home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3"
+      binary: "/home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3"
+    cmakeVariables:
+      CMAKE_CXX_FLAGS: " -fno-omit-frame-pointer"
+      CMAKE_CXX_FLAGS_DEBUG: "-g3 -DDEBUG -flto=auto -fno-omit-frame-pointer -std=c++2a -ggdb3 -O0 -Wall -Wextra -Werror -Wno-unused-result -Wno-deprecated-declarations -fno-inline"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/ivis/OpenScaler/ScalaR/SBER/z2/cmake;/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-src/extras;/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-src/CMake"
+    buildResult:
+      variable: "HAVE_FLAG__ffile_prefix_map__home_ivis_OpenScaler_ScalaR_SBER_z2_build__deps_catch2_src__"
+      cached: true
+      stdout: |
+        Change Dir: '/home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_7d87b/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_7d87b.dir/build.make CMakeFiles/cmTC_7d87b.dir/build
+        gmake[1]: Entering directory '/home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3'
+        Building CXX object CMakeFiles/cmTC_7d87b.dir/src.cxx.o
+        /usr/bin/g++ -DHAVE_FLAG__ffile_prefix_map__home_ivis_OpenScaler_ScalaR_SBER_z2_build__deps_catch2_src__  -fno-omit-frame-pointer  -std=c++20   -ffile-prefix-map=/home/ivis/OpenScaler/ScalaR/SBER/z2/build/_deps/catch2-src/= -o CMakeFiles/cmTC_7d87b.dir/src.cxx.o -c /home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3/src.cxx
+        Linking CXX executable cmTC_7d87b
+        /usr/bin/cmake -E cmake_link_script CMakeFiles/cmTC_7d87b.dir/link.txt --verbose=1
+        /usr/bin/g++  -fno-omit-frame-pointer  CMakeFiles/cmTC_7d87b.dir/src.cxx.o -o cmTC_7d87b 
+        gmake[1]: Leaving directory '/home/ivis/OpenScaler/ScalaR/SBER/z2/build/CMakeFiles/CMakeScratch/TryCompile-1SasA3'
+        
+      exitCode: 0
+...

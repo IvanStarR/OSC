@@ -153,6 +153,32 @@ spdlog/fast:
 .PHONY : spdlog/fast
 
 #=============================================================================
+# Target rules for targets named Catch2
+
+# Build rule for target.
+Catch2: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 Catch2
+.PHONY : Catch2
+
+# fast build rule for target.
+Catch2/fast:
+	$(MAKE) $(MAKESILENT) -f _deps/catch2-build/src/CMakeFiles/Catch2.dir/build.make _deps/catch2-build/src/CMakeFiles/Catch2.dir/build
+.PHONY : Catch2/fast
+
+#=============================================================================
+# Target rules for targets named Catch2WithMain
+
+# Build rule for target.
+Catch2WithMain: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 Catch2WithMain
+.PHONY : Catch2WithMain
+
+# fast build rule for target.
+Catch2WithMain/fast:
+	$(MAKE) $(MAKESILENT) -f _deps/catch2-build/src/CMakeFiles/Catch2WithMain.dir/build.make _deps/catch2-build/src/CMakeFiles/Catch2WithMain.dir/build
+.PHONY : Catch2WithMain/fast
+
+#=============================================================================
 # Target rules for targets named uringkv.core
 
 # Build rule for target.
@@ -592,6 +618,8 @@ help:
 	@echo "... NightlySubmit"
 	@echo "... NightlyTest"
 	@echo "... NightlyUpdate"
+	@echo "... Catch2"
+	@echo "... Catch2WithMain"
 	@echo "... fmt"
 	@echo "... smoke.test"
 	@echo "... spdlog"
