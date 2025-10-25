@@ -139,10 +139,10 @@ macro(test)
 
     directories_files(${CMAKE_CURRENT_SOURCE_DIR} FILES)
 
-    find_package(Catch2 CONFIG QUIET)
-    if(NOT Catch2_FOUND)
-        message(STATUS "Catch2 not found as a package; if tests enabled, ensure FetchContent_MakeAvailable(catch2) was called.")
-    endif()
+    # find_package(Catch2 CONFIG QUIET)
+    # if(NOT Catch2_FOUND)
+    #     message(STATUS "Catch2 not found as a package; if tests enabled, ensure FetchContent_MakeAvailable(catch2) was called.")
+    # endif()
 
     message(STATUS "test ${TEST_NAME}.test is building as an executable file")
     add_executable(${TEST_NAME}.test ${FILES})
