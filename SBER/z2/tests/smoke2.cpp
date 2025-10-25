@@ -39,14 +39,15 @@ TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]
   // Низкий порог flush, чтобы легко получить SST
   KVOptions opts;
   opts.path                       = root;
-  opts.use_uring                 = false; // smoke не зависит от uring
+  opts.use_uring                 = false;
   opts.uring_queue_depth         = 64;
   opts.wal_max_segment_bytes     = 2ull * 1024 * 1024;
   opts.sst_flush_threshold_bytes = 4 * 1024;  // 4KB
   opts.table_cache_capacity      = 8;
-  opts.background_compaction     = false;     // детерминированнее
+  opts.background_compaction     = false;     // без фоновых потоков — детерминированно
   opts.l0_compact_threshold      = 4;
   opts.flush_mode                = FlushMode::FDATASYNC;
+  opts.final_flush_on_close      = false;     // <-- ВАЖНО: чтобы деструктор не делал финальный flush
 
   // 1) init
   {
