@@ -6,7 +6,7 @@
 #include "util.hpp"
 #include "wal/reader.hpp"
 #include "wal/writer.hpp"
-#include "cache/table_cache.hpp"   // ← TableCache
+#include "cache/table_cache.hpp"   // используем твой TableCache
 
 #include <algorithm>
 #include <atomic>
@@ -15,8 +15,13 @@
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace uringkv {
+
+// Сколько L0-файлов допускаем до компактации
+static constexpr size_t kL0CompactThreshold = 6;
 
 struct KV::Impl {
   KVOptions opts;
@@ -61,18 +66,70 @@ struct KV::Impl {
                     opts.wal_max_segment_bytes);
   }
 
+  // Компактация L0: сливаем все текущие SST в один файл
+  bool compact_l0_locked() {
+    if (ssts.size() < kL0CompactThreshold) return true;
+
+    spdlog::info("Compaction: merging {} SST files", ssts.size());
+    std::unordered_map<std::string, std::optional<std::string>> view;
+    view.reserve(1024);
+
+    // От старых к новым: новые перекрывают старые
+    for (const auto& path : ssts) {
+      SstReader r(path);
+      if (!r.good()) continue;
+      auto items = r.scan(std::string_view{}, std::string_view{});
+      for (auto& kv : items) {
+        if (view.find(kv.first) != view.end()) continue; // уже перекрыто более новым
+        view.emplace(kv.first, kv.second);
+      }
+    }
+
+    std::vector<std::pair<std::string, std::optional<std::string>>> entries;
+    entries.reserve(view.size());
+    for (auto& [k, v] : view) {
+      if (v.has_value()) entries.emplace_back(k, v); // tombstone выбрасываем
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& a, const auto& b){ return a.first < b.first; });
+
+    uint64_t idx  = next_sst_index + 1;
+    auto name     = sst_name(idx);
+    auto out_path = join_path(sst_dir, name);
+
+    SstWriter wr(out_path);
+    if (!wr.write_sorted(entries)) {
+      spdlog::error("Compaction failed to write {}", out_path);
+      return false;
+    }
+
+    if (!write_current_atomic(sst_dir, idx)) {
+      spdlog::warn("Compaction: failed to update CURRENT to {}", idx);
+    }
+    next_sst_index = idx;
+
+    // Удаляем старые SST
+    for (const auto& p : ssts) { (void)::unlink(p.c_str()); }
+    ssts.clear();
+    ssts.push_back(out_path);
+
+    // Сбрасываем кэш таблиц, чтобы не держать дескрипторы удалённых файлов
+    tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
+
+    spdlog::info("Compaction: done -> {}", out_path);
+    return true;
+  }
+
   // Флаш по порогу
   void maybe_flush_locked() {
     if (mem_bytes < opts.sst_flush_threshold_bytes) return;
 
-    // Снимок MemTable → отсортированный список
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(mem.size());
     for (auto& [k,v] : mem) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
               [](const auto& a, const auto& b){ return a.first < b.first; });
 
-    // Пишем новый SST
     uint64_t idx = next_sst_index + 1;
     auto name = sst_name(idx);
     auto path = join_path(sst_dir, name);
@@ -88,47 +145,49 @@ struct KV::Impl {
     next_sst_index = idx;
     ssts.push_back(path);
 
-    // Чистим WAL и MemTable
     purge_wal_files_locked();
     mem.clear();
     mem_bytes = 0;
 
     spdlog::info("Flushed MemTable to {}", path);
+
+    // Запускаем компактацию при переполнении
+    (void)compact_l0_locked();
   }
 
   // Полный принудительный флаш (для деструктора при opts.final_flush_on_close)
   void flush_all_locked() {
-    if (mem.empty()) {
-      purge_wal_files_locked();
-      return;
+    if (!mem.empty()) {
+      std::vector<std::pair<std::string, std::optional<std::string>>> entries;
+      entries.reserve(mem.size());
+      for (auto& [k,v] : mem) entries.emplace_back(k, v);
+      std::sort(entries.begin(), entries.end(),
+                [](const auto& a, const auto& b){ return a.first < b.first; });
+
+      uint64_t idx = next_sst_index + 1;
+      auto name = sst_name(idx);
+      auto path = join_path(sst_dir, name);
+
+      SstWriter wr(path);
+      if (!wr.write_sorted(entries)) {
+        spdlog::error("SST final flush failed: {}", path);
+        return;
+      }
+      if (!write_current_atomic(sst_dir, idx)) {
+        spdlog::warn("Failed to update CURRENT for SST {}", idx);
+      }
+      next_sst_index = idx;
+      ssts.push_back(path);
+
+      spdlog::info("Flushed MemTable to {} (final)", path);
     }
 
-    std::vector<std::pair<std::string, std::optional<std::string>>> entries;
-    entries.reserve(mem.size());
-    for (auto& [k,v] : mem) entries.emplace_back(k, v);
-    std::sort(entries.begin(), entries.end(),
-              [](const auto& a, const auto& b){ return a.first < b.first; });
-
-    uint64_t idx = next_sst_index + 1;
-    auto name = sst_name(idx);
-    auto path = join_path(sst_dir, name);
-
-    SstWriter wr(path);
-    if (!wr.write_sorted(entries)) {
-      spdlog::error("SST final flush failed: {}", path);
-      return;
-    }
-    if (!write_current_atomic(sst_dir, idx)) {
-      spdlog::warn("Failed to update CURRENT for SST {}", idx);
-    }
-    next_sst_index = idx;
-    ssts.push_back(path);
+    // После финального флаша попробуем компактнуть, если файлов много
+    (void)compact_l0_locked();
 
     purge_wal_files_locked();
     mem.clear();
     mem_bytes = 0;
-
-    spdlog::info("Flushed MemTable to {} (final)", path);
   }
 
   // Загрузка состояния при старте
@@ -228,7 +287,7 @@ std::optional<std::string> KV::get(std::string_view key) {
   // 2) затем SST с конца (новейшие) — через TableCache
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     auto tbl = p_->tcache.get_table(*itf);
-    if (!tbl) continue; // не удалось открыть/прочитать индекс
+    if (!tbl) continue;                // не удалось открыть/прочитать индекс
     auto st = tbl->get(key);
     if (!st) continue;
     if (st->first == SST_FLAG_DEL)
@@ -257,14 +316,13 @@ bool KV::del(std::string_view key) {
 std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   std::lock_guard lk(p_->mu);
 
-  // финальное состояние ключей (с учётом MemTable и всех SST; приоритет — свежее)
+  // итоговое состояние ключей (учёт MemTable и всех SST; приоритет — свежее)
   std::unordered_map<std::string, std::optional<std::string>> view;
 
-  // 1) mem (самое свежее)
+  // 1) mem
   for (auto& [k, v] : p_->mem) view[k] = v;
 
   // 2) sst с конца к началу — дополняем только отсутствующие
-  // (скан здесь оставляем через SstReader — TableCache используем для точечных get)
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     SstReader r(*itf);
     if (!r.good()) continue;
