@@ -22,29 +22,22 @@ struct KV::Impl {
   std::string wal_dir;
   std::string sst_dir;
 
-  // Текущий WAL-писатель
   WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024};
 
-  // MemTable: key -> optional<value> (nullopt = tombstone)
   std::unordered_map<std::string, std::optional<std::string>> mem;
   uint64_t mem_bytes = 0;
 
-  // Список SST файлов (полные пути), по возрастанию индекса
   std::vector<std::string> ssts;
   uint64_t next_sst_index = 0;
 
   std::mutex mu;
   std::atomic<uint64_t> seq{1};
 
-  // --- вспомогательные ---
-
-  // Удалить все *.wal и переоткрыть новый сегмент
   void purge_wal_files_locked() {
-    // Удаляем все .wal
     if (DIR* d = ::opendir(wal_dir.c_str())) {
       while (auto* e = ::readdir(d)) {
         const char* name = e->d_name;
-        if (!name || name[0] == '.') continue; // пропускаем "." и ".."
+        if (!name || name[0] == '.') continue;
         std::string n{name};
         if (n.size() == 10 && n.substr(6) == ".wal") {
           ::unlink(join_path(wal_dir, n).c_str());
@@ -52,31 +45,22 @@ struct KV::Impl {
       }
       ::closedir(d);
     }
-
-    // fsync() каталога, чтобы гарантировать видимость unlink() для наблюдателя
     int dfd = ::open(wal_dir.c_str(), O_RDONLY | O_DIRECTORY);
-    if (dfd >= 0) {
-      (void)::fsync(dfd);
-      ::close(dfd);
-    }
+    if (dfd >= 0) { (void)::fsync(dfd); ::close(dfd); }
 
-    // заново открыть свежий сегмент
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes);
   }
 
-  // Флаш по порогу
   void maybe_flush_locked() {
     if (mem_bytes < opts.sst_flush_threshold_bytes) return;
 
-    // Сформировать отсортированный снимок MemTable (включая tombstone)
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(mem.size());
     for (auto& [k,v] : mem) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
               [](const auto& a, const auto& b){ return a.first < b.first; });
 
-    // Имя нового SST
     uint64_t idx = next_sst_index + 1;
     auto name = sst_name(idx);
     auto path = join_path(sst_dir, name);
@@ -86,14 +70,12 @@ struct KV::Impl {
       spdlog::error("SST flush failed: {}", path);
       return;
     }
-    // Обновим CURRENT и список
     if (!write_current_atomic(sst_dir, idx)) {
       spdlog::warn("Failed to update CURRENT for SST {}", idx);
     }
     next_sst_index = idx;
     ssts.push_back(path);
 
-    // Чистим WAL и MemTable
     purge_wal_files_locked();
     mem.clear();
     mem_bytes = 0;
@@ -101,10 +83,8 @@ struct KV::Impl {
     spdlog::info("Flushed MemTable to {}", path);
   }
 
-  // Принудительный флаш всего MemTable (используется в деструкторе при opts.final_flush_on_close)
   void flush_all_locked() {
     if (mem.empty()) {
-      // даже если пусто — убедимся, что WAL очищен и переоткрыт
       purge_wal_files_locked();
       return;
     }
@@ -137,7 +117,6 @@ struct KV::Impl {
     spdlog::info("Flushed MemTable to {} (final)", path);
   }
 
-  // --- конструктор загрузки состояния ---
   Impl(const KVOptions& o) : opts(o) {
     wal_dir = join_path(opts.path, "wal");
     sst_dir = join_path(opts.path, "sst");
@@ -148,19 +127,16 @@ struct KV::Impl {
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes);
 
-    // Загрузка существующих SST
     ssts.clear();
     for (auto& name : list_sst_sorted(sst_dir)) {
       ssts.push_back(join_path(sst_dir, name));
       uint64_t idx = std::stoull(name.substr(0, 6));
       next_sst_index = std::max(next_sst_index, idx);
     }
-    // CURRENT (последний номер)
     uint64_t cur = 0;
     if (read_current(sst_dir, cur))
       next_sst_index = std::max(next_sst_index, cur);
 
-    // Replay WAL
     WalReader rd(wal_dir);
     if (rd.good()) {
       size_t replayed = 0;
@@ -180,15 +156,13 @@ struct KV::Impl {
   }
 };
 
-// --- интерфейс KV ---
-
 KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 
 KV::~KV() {
   if (p_) {
     std::lock_guard lk(p_->mu);
     if (p_->opts.final_flush_on_close) {
-      p_->flush_all_locked(); // принудительный флаш и очистка WAL
+      p_->flush_all_locked();
     }
     delete p_;
     p_ = nullptr;
@@ -211,10 +185,8 @@ bool KV::put(std::string_view key, std::string_view value) {
     return false;
 
   auto& slot = p_->mem[std::string(key)];
-  // обновление mem_bytes: сначала вычтем старое тело
   if (slot.has_value())
     p_->mem_bytes -= slot->size();
-  // новая запись
   slot = std::string(value);
   p_->mem_bytes += key.size() + value.size();
 
@@ -230,7 +202,6 @@ std::optional<std::string> KV::get(std::string_view key) {
       return std::nullopt;
     return it->second.value();
   }
-  // ищем в SST с конца (самый новый сначала)
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     SstReader r(*itf);
     if (!r.good())
@@ -263,14 +234,10 @@ bool KV::del(std::string_view key) {
 
 std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   std::lock_guard lk(p_->mu);
-
-  // финальное состояние ключей (учитывая mem и все SST; приоритет — свежее)
   std::unordered_map<std::string, std::optional<std::string>> view;
 
-  // 1) mem (самое свежее)
   for (auto& [k, v] : p_->mem) view[k] = v;
 
-  // 2) sst с конца к началу — заполняем только то, чего ещё нет в view
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     SstReader r(*itf);
     if (!r.good()) continue;
@@ -281,7 +248,6 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
     }
   }
 
-  // Соберём конечный список в диапазоне
   std::vector<RangeItem> out;
   out.reserve(view.size());
   for (auto& [k, v] : view) {
