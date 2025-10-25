@@ -1,6 +1,8 @@
 #include "sst/writer.hpp"
 #include "sst/footer.hpp"
 #include "util.hpp"
+#include "sst/record.hpp"
+
 #include <xxhash.h>
 #include <spdlog/spdlog.h>
 #include <unistd.h>
@@ -31,7 +33,8 @@ bool SstWriter::write_sorted(
       spdlog::warn("SST entries not sorted; writer will still proceed");
 
   uint64_t offset = 0;
-  std::vector<std::pair<std::string,uint64_t>> sparse; sparse.reserve(entries.size()/index_step+4);
+  std::vector<std::pair<std::string,uint64_t>> sparse; 
+  sparse.reserve(entries.size()/index_step+4);
 
   for (size_t i=0;i<entries.size();++i) {
     const auto& kv = entries[i];
@@ -39,7 +42,6 @@ bool SstWriter::write_sorted(
     const bool is_put = kv.second.has_value();
     const std::string_view v = is_put ? std::string_view(*kv.second) : std::string_view();
 
-    // индекс каждые index_step записей
     if (i % index_step == 0) sparse.emplace_back(k, offset);
 
     XXH64_state_t* st = XXH64_createState();
@@ -66,7 +68,7 @@ bool SstWriter::write_sorted(
     offset += static_cast<uint64_t>(w);
   }
 
-  // ---- записываем индексный блок ----
+  // ---- индексный блок ----
   const uint64_t index_offset = offset;
 
   uint32_t count = static_cast<uint32_t>(sparse.size());

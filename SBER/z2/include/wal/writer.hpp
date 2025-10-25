@@ -2,7 +2,7 @@
 #include <string>
 #include <string_view>
 #include <sys/uio.h>
-#include "kv.hpp" // для FlushMode
+#include "kv.hpp"
 #include "wal/uring_backend.hpp"
 
 namespace uringkv {
@@ -36,6 +36,9 @@ private:
   bool write_vectored(const struct ::iovec *iov, int iovcnt);
   bool fsync_backend();
 
+  // обязательно объявлен в заголовке
+  bool append_(const WalRecordMeta &m, std::string_view k, std::string_view v);
+
   std::string  wal_dir_;
   std::string  path_;
   int          fd_ = -1;
@@ -47,7 +50,7 @@ private:
   uint64_t     seg_size_  = 0;
 
   uint64_t     max_segment_bytes_;
-  uint64_t     group_commit_bytes_; // НОВОЕ
+  uint64_t     group_commit_bytes_;
   FlushMode    flush_mode_;
 
   uint64_t     bytes_since_sync_ = 0;

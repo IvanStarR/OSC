@@ -3,6 +3,7 @@
 #include "wal/record.hpp"
 #include "wal/segment.hpp"
 #include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -21,7 +22,6 @@
 
 namespace uringkv {
 
-// --- список сегментов wal (отсортированный) ---
 static std::vector<std::string> list_wal_segments_sorted(const std::string &dir) {
   std::vector<std::string> out;
   DIR *d = ::opendir(dir.c_str());
@@ -29,8 +29,8 @@ static std::vector<std::string> list_wal_segments_sorted(const std::string &dir)
   while (auto *ent = ::readdir(d)) {
     std::string n = ent->d_name;
     if (n.size() == 10 && n.substr(6) == ".wal") {
-      bool digits = std::all_of(n.begin(), n.begin() + 6,
-        [](unsigned char c) { return std::isdigit(c); });
+      bool digits = std::all_of(n.begin(), n.begin()+6,
+                                [](unsigned char c){ return std::isdigit(c); });
       if (digits) out.push_back(n);
     }
   }
@@ -166,7 +166,7 @@ static inline bool posix_fdatasync(int fd) {
 
 bool WalWriter::fsync_backend() {
   if (use_uring_ && uring_.initialized()) {
-    if (flush_mode_ == FlushMode::FSYNC) return ::fsync(fd_) == 0; // строго FSYNC
+    if (flush_mode_ == FlushMode::FSYNC) return ::fsync(fd_) == 0;
     return uring_.fsync(fd_);
   }
   switch (flush_mode_) {
@@ -214,7 +214,6 @@ bool WalWriter::append_(const WalRecordMeta &m, std::string_view k, std::string_
 
   if (!this->write_vectored(iov, 4)) return false;
 
-  // выравнивание до 4К
   const uint64_t used = body + trailer_sz;
   const uint64_t rem  = used % WalSegmentConst::BLOCK_SIZE;
   uint64_t pad = rem ? (WalSegmentConst::BLOCK_SIZE - rem) : 0;
@@ -231,7 +230,6 @@ bool WalWriter::append_(const WalRecordMeta &m, std::string_view k, std::string_
   seg_size_ += used + ((rem) ? (WalSegmentConst::BLOCK_SIZE - rem) : 0);
   bytes_since_sync_ += used;
 
-  // НОВОЕ: настраиваемый group-commit порог
   if (bytes_since_sync_ >= group_commit_bytes_) {
     if (!this->fsync_backend()) return false;
     bytes_since_sync_ = 0;
