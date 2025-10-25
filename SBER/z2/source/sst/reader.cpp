@@ -17,9 +17,8 @@ SstReader::~SstReader() { if (fd_ >= 0) ::close(fd_); }
 
 std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view key) {
   if (fd_ < 0) return std::nullopt;
-  // Пройдём линейно; сохраним последнее состояние ключа
   std::optional<std::pair<uint32_t, std::string>> state;
-  off_t off = 0;
+  [[maybe_unused]] off_t off = 0;
   const size_t bufk = 4096;
   (void)bufk;
 
