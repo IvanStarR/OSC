@@ -29,9 +29,7 @@ TEST_CASE("WAL recovery after restart") {
   }
   {
     KV kv({.path = dir});
-    // После реплея WAL ключ x остаётся удалён
     REQUIRE_FALSE(kv.get("x").has_value());
-    // Ключ y должен сохраниться
     auto vy = kv.get("y");
     REQUIRE(vy.has_value());
     REQUIRE(*vy == "2");

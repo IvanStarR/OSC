@@ -111,13 +111,12 @@ TEST_CASE("iter1: WAL replay persistence (no SST flush)") {
 
   const auto dir = mktemp_dir("uringkv_replay_");
 
-  // шаг 1: пишем в WAL, НО НЕ флашим MemTable в SST
   {
     KVOptions opts;
     opts.path = dir;
     opts.use_uring = false;
-    opts.sst_flush_threshold_bytes = (1ull<<30); // заведомо недостижимый порог
-    opts.final_flush_on_close = false;           // важно: оставить в WAL
+    opts.sst_flush_threshold_bytes = (1ull<<30); 
+    opts.final_flush_on_close = false;          
     opts.background_compaction = false;
 
     KV kv(opts);
@@ -125,9 +124,8 @@ TEST_CASE("iter1: WAL replay persistence (no SST flush)") {
     REQUIRE(kv.put("x","1"));
     REQUIRE(kv.put("y","2"));
     REQUIRE(kv.del("x"));
-  } // здесь только закрывается WAL, MemTable не уходит в SST
+  } 
 
-  // шаг 2: переоткрываем и проверяем replay
   {
     KVOptions opts;
     opts.path = dir;
@@ -136,7 +134,7 @@ TEST_CASE("iter1: WAL replay persistence (no SST flush)") {
     opts.background_compaction = false;
 
     KV kv(opts);
-    REQUIRE_FALSE(kv.get("x").has_value()); // tombstone из WAL
+    REQUIRE_FALSE(kv.get("x").has_value()); 
     auto vy = kv.get("y");
     REQUIRE(vy.has_value());
     REQUIRE(*vy == std::string("2"));
@@ -154,7 +152,7 @@ TEST_CASE("iter1: MemTable flush creates SST and purges WAL") {
     KVOptions opts;
     opts.path = dir;
     opts.use_uring = false;
-    opts.sst_flush_threshold_bytes = 2 * 1024; // низкий порог — гарантированный flush
+    opts.sst_flush_threshold_bytes = 2 * 1024; 
     opts.final_flush_on_close = true;
     opts.background_compaction = false;
 
@@ -164,8 +162,6 @@ TEST_CASE("iter1: MemTable flush creates SST and purges WAL") {
     for (int i=0;i<200;++i) {
       REQUIRE(kv.put("k"+std::to_string(i), std::string(64, 'a' + (i%26))));
     }
-    // при выходе из scope: final_flush_on_close=true — остатки доливаются в SST,
-    // purge_wal_files_locked() создаст новый пустой (header-only) сегмент WAL
   }
 
   auto sst_names = list_sst_sorted(sst_dir.string());

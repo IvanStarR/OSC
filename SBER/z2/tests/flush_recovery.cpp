@@ -18,22 +18,18 @@ TEST_CASE("flush MemTable to SST and recover") {
   auto dir = mkd("uringkv_flush_");
 
   {
-    KV kv({.path=dir, .sst_flush_threshold_bytes=1*1024}); // маленький порог
+    KV kv({.path=dir, .sst_flush_threshold_bytes=1*1024});
     REQUIRE(kv.init_storage_layout());
-    // запишем так, чтобы точно был flush
     for (int i=0;i<200;++i) {
       kv.put("k"+std::to_string(i), std::string(100, 'a' + (i%26)));
     }
-    // и несколько удалений
     kv.del("k3");
     kv.del("k5");
   }
 
   {
     KV kv({.path=dir});
-    // существующие ключи
     REQUIRE(kv.get("k2").has_value());
-    // удалённые должны отсутствовать
     REQUIRE_FALSE(kv.get("k3").has_value());
     REQUIRE_FALSE(kv.get("k5").has_value());
   }

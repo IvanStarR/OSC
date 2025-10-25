@@ -28,12 +28,12 @@ TEST_CASE("no deadlock on destructor with final flush, no background compaction"
     o.path = dir;
     o.use_uring = false;
     o.final_flush_on_close = true;
-    o.background_compaction = false; // важно!
-    o.sst_flush_threshold_bytes = 4*1024; // спровоцировать несколько SST
+    o.background_compaction = false;
+    o.sst_flush_threshold_bytes = 4*1024; 
     KV kv(o);
     REQUIRE(kv.init_storage_layout());
     for (int i=0;i<5000;++i)
       REQUIRE(kv.put("k"+std::to_string(i), "v"+std::to_string(i)));
-  } // если бы был дедлок — тест бы завис/падал по timeout в CI
+  } 
   SUCCEED();
 }
