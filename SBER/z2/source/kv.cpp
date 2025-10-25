@@ -80,6 +80,7 @@ struct KV::Impl {
     uint64_t new_idx = 0;
     {
       std::unique_lock<std::mutex> lk(mu);
+      if (stopping) return true; // если нас останавливают — выходим тихо
       if (ssts.size() < opts.l0_compact_threshold) return true;
       input = ssts;
       new_idx = next_sst_index + 1;
@@ -121,6 +122,7 @@ struct KV::Impl {
     // Step 4: commit result under lock, remove old, reset cache
     {
       std::unique_lock<std::mutex> lk(mu);
+      if (stopping) return true; // при остановке просто не коммитим ничего тяжёлого
 
       std::vector<std::string> new_list;
       new_list.reserve(ssts.size()+1);
@@ -213,7 +215,7 @@ struct KV::Impl {
       spdlog::info("Flushed MemTable to {} (final)", path);
     }
 
-    // Синхронная компактация только если фон выключен
+    // Если фон выключен — делаем одну финальную компакцию синхронно
     if (!opts.background_compaction) {
       (void)compact_l0_once();
     }
@@ -232,6 +234,19 @@ struct KV::Impl {
       lk.unlock();
       (void)compact_l0_once();
       lk.lock();
+    }
+  }
+
+  // Аккуратно остановить фон, если он включён и поток создан
+  void stop_bg_if_any() {
+    if (!opts.background_compaction) return;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      stopping = true;
+      cv.notify_all();
+    }
+    if (bg_compactor.joinable()) {
+      bg_compactor.join();
     }
   }
 
@@ -284,14 +299,7 @@ struct KV::Impl {
   }
 
   ~Impl() {
-    if (opts.background_compaction) {
-      {
-        std::lock_guard<std::mutex> lk(mu);
-        stopping = true;
-        cv.notify_all();
-      }
-      if (bg_compactor.joinable()) bg_compactor.join();
-    }
+    stop_bg_if_any();
   }
 };
 
@@ -302,14 +310,17 @@ KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 KV::~KV() {
   if (!p_) return;
 
-  // 1) под локом только финальный флаш
+  // СНАЧАЛА останавливаем фон (чтобы не конкурировал за mu в финальном флаше)
+  p_->stop_bg_if_any();
+
+  // Теперь финальный flush под локом
   {
     std::lock_guard lk(p_->mu);
     if (p_->opts.final_flush_on_close) {
       p_->flush_all_locked();
     }
   }
-  // 2) лок отпущен, теперь безопасно разрушать Impl (остановка фона внутри)
+
   delete p_;
   p_ = nullptr;
 }
