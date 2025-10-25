@@ -39,14 +39,12 @@ struct KV::Impl {
   // --- вспомогательные ---
 
   // Удалить все *.wal и переоткрыть новый сегмент
-  // стало:
   void purge_wal_files_locked() {
     // Удаляем все .wal
-    if (DIR *d = ::opendir(wal_dir.c_str())) {
-      while (auto *e = ::readdir(d)) {
-        const char *name = e->d_name;
-        if (!name || name[0] == '.')
-          continue; // пропускаем "." и ".."
+    if (DIR* d = ::opendir(wal_dir.c_str())) {
+      while (auto* e = ::readdir(d)) {
+        const char* name = e->d_name;
+        if (!name || name[0] == '.') continue; // пропускаем "." и ".."
         std::string n{name};
         if (n.size() == 10 && n.substr(6) == ".wal") {
           ::unlink(join_path(wal_dir, n).c_str());
@@ -62,23 +60,21 @@ struct KV::Impl {
       ::close(dfd);
     }
 
-    // заново открыть свежий сегмент (после чистки он станет 000001.wal)
+    // заново открыть свежий сегмент
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes);
   }
 
   // Флаш по порогу
   void maybe_flush_locked() {
-    if (mem_bytes < opts.sst_flush_threshold_bytes)
-      return;
+    if (mem_bytes < opts.sst_flush_threshold_bytes) return;
 
     // Сформировать отсортированный снимок MemTable (включая tombstone)
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(mem.size());
-    for (auto &[k, v] : mem)
-      entries.emplace_back(k, v);
+    for (auto& [k,v] : mem) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
+              [](const auto& a, const auto& b){ return a.first < b.first; });
 
     // Имя нового SST
     uint64_t idx = next_sst_index + 1;
@@ -105,7 +101,7 @@ struct KV::Impl {
     spdlog::info("Flushed MemTable to {}", path);
   }
 
-  // Принудительный флаш всего MemTable (используется в деструкторе)
+  // Принудительный флаш всего MemTable (используется в деструкторе при opts.final_flush_on_close)
   void flush_all_locked() {
     if (mem.empty()) {
       // даже если пусто — убедимся, что WAL очищен и переоткрыт
@@ -115,10 +111,9 @@ struct KV::Impl {
 
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(mem.size());
-    for (auto &[k, v] : mem)
-      entries.emplace_back(k, v);
+    for (auto& [k,v] : mem) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
+              [](const auto& a, const auto& b){ return a.first < b.first; });
 
     uint64_t idx = next_sst_index + 1;
     auto name = sst_name(idx);
@@ -143,7 +138,7 @@ struct KV::Impl {
   }
 
   // --- конструктор загрузки состояния ---
-  Impl(const KVOptions &o) : opts(o) {
+  Impl(const KVOptions& o) : opts(o) {
     wal_dir = join_path(opts.path, "wal");
     sst_dir = join_path(opts.path, "sst");
     ensure_dir(opts.path);
@@ -155,7 +150,7 @@ struct KV::Impl {
 
     // Загрузка существующих SST
     ssts.clear();
-    for (auto &name : list_sst_sorted(sst_dir)) {
+    for (auto& name : list_sst_sorted(sst_dir)) {
       ssts.push_back(join_path(sst_dir, name));
       uint64_t idx = std::stoull(name.substr(0, 6));
       next_sst_index = std::max(next_sst_index, idx);
@@ -187,12 +182,14 @@ struct KV::Impl {
 
 // --- интерфейс KV ---
 
-KV::KV(const KVOptions &opts) : p_(new Impl(opts)) {}
+KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 
 KV::~KV() {
   if (p_) {
     std::lock_guard lk(p_->mu);
-    p_->flush_all_locked(); // принудительный флаш и очистка WAL
+    if (p_->opts.final_flush_on_close) {
+      p_->flush_all_locked(); // принудительный флаш и очистка WAL
+    }
     delete p_;
     p_ = nullptr;
   }
@@ -213,7 +210,7 @@ bool KV::put(std::string_view key, std::string_view value) {
   if (!p_->wal.append_put(s, key, value))
     return false;
 
-  auto &slot = p_->mem[std::string(key)];
+  auto& slot = p_->mem[std::string(key)];
   // обновление mem_bytes: сначала вычтем старое тело
   if (slot.has_value())
     p_->mem_bytes -= slot->size();
@@ -254,7 +251,7 @@ bool KV::del(std::string_view key) {
   if (!p_->wal.append_del(s, key))
     return false;
 
-  auto &slot = p_->mem[std::string(key)];
+  auto& slot = p_->mem[std::string(key)];
   if (slot.has_value())
     p_->mem_bytes -= slot->size();
   slot = std::nullopt;
@@ -271,16 +268,14 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   std::unordered_map<std::string, std::optional<std::string>> view;
 
   // 1) mem (самое свежее)
-  for (auto &[k, v] : p_->mem)
-    view[k] = v;
+  for (auto& [k, v] : p_->mem) view[k] = v;
 
   // 2) sst с конца к началу — заполняем только то, чего ещё нет в view
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     SstReader r(*itf);
-    if (!r.good())
-      continue;
+    if (!r.good()) continue;
     auto items = r.scan(start, end);
-    for (auto &kv : items) {
+    for (auto& kv : items) {
       if (view.find(kv.first) == view.end())
         view[kv.first] = kv.second;
     }
@@ -289,14 +284,12 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   // Соберём конечный список в диапазоне
   std::vector<RangeItem> out;
   out.reserve(view.size());
-  for (auto &[k, v] : view) {
-    if ((!start.empty() && k < start) || (!end.empty() && k > end))
-      continue;
-    if (v.has_value())
-      out.push_back({k, *v});
+  for (auto& [k, v] : view) {
+    if ((!start.empty() && k < start) || (!end.empty() && k > end)) continue;
+    if (v.has_value()) out.push_back({k, *v});
   }
   std::sort(out.begin(), out.end(),
-            [](const auto &a, const auto &b) { return a.key < b.key; });
+            [](const auto& a, const auto& b){ return a.key < b.key; });
   return out;
 }
 
