@@ -4,21 +4,21 @@
 #include <utility>
 #include <string_view>
 #include <cstdint>
-#include <optional>           // ← важно!
-#include "sst/record.hpp"     // или "uringkv/sst/record.hpp" если у тебя такой путь
+#include <optional>
+#include "sst/record.hpp"
+#include "sst/index.hpp"
 
 namespace uringkv {
 
-// Пишем отсортированные записи (ключи и tombstone-дeлеты)
 class SstWriter {
 public:
   explicit SstWriter(const std::string& path);
   ~SstWriter();
 
   // entries должны быть отсортированы по ключу (возрастание).
-  // pair.second.has_value() => PUT; иначе DEL.
   bool write_sorted(
-      const std::vector<std::pair<std::string, std::optional<std::string>>>& entries);
+      const std::vector<std::pair<std::string, std::optional<std::string>>>& entries,
+      uint32_t index_step = 32); // каждые N записей добавляем точку индекса
 
 private:
   std::string path_;
