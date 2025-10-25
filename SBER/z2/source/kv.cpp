@@ -1,9 +1,9 @@
 #include "kv.hpp"
 #include "util.hpp"
-#include "wal.hpp"
+#include "wal/reader.hpp"
+#include "wal/writer.hpp"
 #include <algorithm>
 #include <atomic>
-#include <map>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <unordered_map>
@@ -12,30 +12,28 @@ namespace uringkv {
 
 struct KV::Impl {
   KVOptions opts;
-  std::string wal_path;
-  WalWriter wal{std::string{}, false, 256}; // пустой, ленивый
-  std::unordered_map<std::string, std::optional<std::string>>
-      mem; // tombstone = nullopt
+  std::string wal_dir;
+  WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024};
+  std::unordered_map<std::string, std::optional<std::string>> mem;
   std::mutex mu;
   std::atomic<uint64_t> seq{1};
 
   Impl(const KVOptions &o) : opts(o) {
-    auto wal_dir = join_path(opts.path, "wal");
+    wal_dir = join_path(opts.path, "wal");
     ensure_dir(opts.path);
     ensure_dir(wal_dir);
-    wal_path = join_path(wal_dir, "000001.wal");
-    // создаём WAL с учётом io_uring-флагов
-    wal = WalWriter(wal_path, opts.use_uring, opts.uring_queue_depth);
 
-    // Recovery (MVP): replay WAL
-    WalReader rd(wal_path);
+    wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
+                    opts.wal_max_segment_bytes);
+
+    WalReader rd(wal_dir);
     if (rd.good()) {
       size_t replayed = 0;
       while (auto it = rd.next()) {
         if (it->flags == 1)
-          mem[it->key] = it->value; // PUT
+          mem[it->key] = it->value;
         else if (it->flags == 2)
-          mem[it->key] = std::nullopt; // DEL
+          mem[it->key] = std::nullopt;
         seq.store(std::max<uint64_t>(seq.load(), it->seqno + 1));
         ++replayed;
       }
