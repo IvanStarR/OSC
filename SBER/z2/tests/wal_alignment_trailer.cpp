@@ -21,7 +21,7 @@ static std::string mktmp(const char* p){
   return d.string();
 }
 
-static size_t count_wals(const fs::path& wal_dir){
+[[maybe_unused]]static size_t count_wals(const fs::path& wal_dir){
   size_t n=0;
   if (fs::exists(wal_dir)) for (auto& e: fs::directory_iterator(wal_dir)) {
     if (e.is_regular_file() && e.path().extension()==".wal") ++n;
