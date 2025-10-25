@@ -30,7 +30,7 @@ struct KV::Impl {
   WalWriter wal{std::string{}, false, 256, false,
                 64ull * 1024 * 1024, (1ull<<20), FlushMode::FDATASYNC};
 
-  // MemTable
+  // MemTable: key -> value / tombstone
   std::unordered_map<std::string, std::optional<std::string>> mem;
   uint64_t mem_bytes = 0;
 
@@ -50,7 +50,24 @@ struct KV::Impl {
   std::mutex              mu;
   std::atomic<uint64_t>   seq{1};
 
+  // ---- метрики (внутренние атомики) ----
+  std::atomic<uint64_t> m_puts{0}, m_gets{0}, m_dels{0};
+  std::atomic<uint64_t> m_get_hits{0}, m_get_misses{0};
+  std::atomic<uint64_t> m_wal_bytes{0};
+  std::atomic<uint64_t> m_sst_flushes{0};
+  std::atomic<uint64_t> m_compactions{0};
+
   // ---- helpers ----
+
+  // Подсчёт точного объёма записи WAL (мета+key+value+трейлер+паддинг)
+  static uint64_t wal_bytes_for_record(size_t klen, size_t vlen) {
+    const uint64_t meta = sizeof(WalRecordMeta) + klen + vlen;
+    const uint64_t trailer = sizeof(WalRecordTrailer);
+    const uint64_t used = meta + trailer;
+    const uint64_t rem  = used % WalSegmentConst::BLOCK_SIZE;
+    const uint64_t pad  = rem ? (WalSegmentConst::BLOCK_SIZE - rem) : 0;
+    return used + pad;
+  }
 
   void purge_wal_files_locked() {
     // удалить все *.wal
@@ -95,7 +112,7 @@ struct KV::Impl {
 
     spdlog::info("BG-Compaction: merging {} SST files", input.size());
 
-    // Шаг 2: финальный view
+    // Шаг 2: финальный view — идём с конца, чтобы новые перекрывали старые
     std::unordered_map<std::string, std::optional<std::string>> view;
     view.reserve(1024);
 
@@ -146,6 +163,7 @@ struct KV::Impl {
       for (const auto& p : input) { (void)::unlink(p.c_str()); }
 
       tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
+      m_compactions.fetch_add(1, std::memory_order_relaxed);
     }
 
     spdlog::info("BG-Compaction: done -> {}", out_path);
@@ -153,9 +171,7 @@ struct KV::Impl {
   }
 
   void maybe_schedule_compaction_locked() {
-    if (!opts.background_compaction) {
-      return;
-    }
+    if (!opts.background_compaction) return;
     if (ssts.size() >= opts.l0_compact_threshold) {
       need_compact = true;
       cv.notify_one();
@@ -186,10 +202,12 @@ struct KV::Impl {
     next_sst_index = idx;
     ssts.push_back(path);
 
+    // purge WAL и очистка MemTable
     purge_wal_files_locked();
     mem.clear();
     mem_bytes = 0;
 
+    m_sst_flushes.fetch_add(1, std::memory_order_relaxed);
     spdlog::info("Flushed MemTable to {}", path);
 
     maybe_schedule_compaction_locked();
@@ -216,6 +234,7 @@ struct KV::Impl {
         }
         next_sst_index = idx;
         ssts.push_back(path);
+        m_sst_flushes.fetch_add(1, std::memory_order_relaxed);
         spdlog::info("Flushed MemTable to {} (final)", path);
       }
     }
@@ -240,6 +259,7 @@ struct KV::Impl {
     }
   }
 
+  // Корректно остановить фон, если он есть
   void stop_bg_if_any() {
     if (!opts.background_compaction) return;
     {
@@ -314,8 +334,10 @@ KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 KV::~KV() {
   if (!p_) return;
 
+  // остановить фон
   p_->stop_bg_if_any();
 
+  // финальный flush под локом (опционально)
   {
     std::lock_guard lk(p_->mu);
     if (p_->opts.final_flush_on_close) {
@@ -323,6 +345,7 @@ KV::~KV() {
     }
   }
 
+  // при выключенной фоновой компактации — один проход уже БЕЗ лока
   if (!p_->opts.background_compaction) {
     (void)p_->compact_l0_once();
   }
@@ -349,16 +372,23 @@ bool KV::put(std::string_view key, std::string_view value) {
   slot = std::string(value);
   p_->mem_bytes += key.size() + value.size();
 
+  // метрики
+  p_->m_puts.fetch_add(1, std::memory_order_relaxed);
+  p_->m_wal_bytes.fetch_add(Impl::wal_bytes_for_record(key.size(), value.size()),
+                             std::memory_order_relaxed);
+
   p_->maybe_flush_locked();
   return true;
 }
 
 std::optional<std::string> KV::get(std::string_view key) {
   std::lock_guard lk(p_->mu);
+  p_->m_gets.fetch_add(1, std::memory_order_relaxed);
 
   auto it = p_->mem.find(std::string(key));
   if (it != p_->mem.end()) {
-    if (!it->second.has_value()) return std::nullopt;
+    if (!it->second.has_value()) { p_->m_get_misses.fetch_add(1, std::memory_order_relaxed); return std::nullopt; }
+    p_->m_get_hits.fetch_add(1, std::memory_order_relaxed);
     return it->second.value();
   }
 
@@ -367,9 +397,11 @@ std::optional<std::string> KV::get(std::string_view key) {
     if (!tbl) continue;
     auto st = tbl->get(key);
     if (!st) continue;
-    if (st->first == SST_FLAG_DEL) return std::nullopt;
+    if (st->first == SST_FLAG_DEL) { p_->m_get_misses.fetch_add(1, std::memory_order_relaxed); return std::nullopt; }
+    p_->m_get_hits.fetch_add(1, std::memory_order_relaxed);
     return st->second;
   }
+  p_->m_get_misses.fetch_add(1, std::memory_order_relaxed);
   return std::nullopt;
 }
 
@@ -382,6 +414,11 @@ bool KV::del(std::string_view key) {
   if (slot.has_value()) p_->mem_bytes -= slot->size();
   slot = std::nullopt;
   p_->mem_bytes += key.size();
+
+  // метрики
+  p_->m_dels.fetch_add(1, std::memory_order_relaxed);
+  p_->m_wal_bytes.fetch_add(Impl::wal_bytes_for_record(key.size(), 0),
+                             std::memory_order_relaxed);
 
   p_->maybe_flush_locked();
   return true;
@@ -412,6 +449,42 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   std::sort(out.begin(), out.end(),
             [](const auto& a, const auto& b){ return a.key < b.key; });
   return out;
+}
+
+// -------- Метрики: API --------
+
+KVMetrics KV::get_metrics() const {
+  std::lock_guard lk(p_->mu);
+  KVMetrics m;
+  m.puts        = p_->m_puts.load(std::memory_order_relaxed);
+  m.gets        = p_->m_gets.load(std::memory_order_relaxed);
+  m.dels        = p_->m_dels.load(std::memory_order_relaxed);
+  m.get_hits    = p_->m_get_hits.load(std::memory_order_relaxed);
+  m.get_misses  = p_->m_get_misses.load(std::memory_order_relaxed);
+  m.wal_bytes   = p_->m_wal_bytes.load(std::memory_order_relaxed);
+  m.sst_flushes = p_->m_sst_flushes.load(std::memory_order_relaxed);
+  m.compactions = p_->m_compactions.load(std::memory_order_relaxed);
+
+  m.table_cache_hits   = p_->tcache.hits();
+  m.table_cache_misses = p_->tcache.misses();
+  m.table_cache_opens  = p_->tcache.opens();
+
+  m.mem_bytes = p_->mem_bytes;
+  m.sst_count = static_cast<uint64_t>(p_->ssts.size());
+  return m;
+}
+
+void KV::reset_metrics(bool reset_cache_stats) {
+  std::lock_guard lk(p_->mu);
+  p_->m_puts.store(0, std::memory_order_relaxed);
+  p_->m_gets.store(0, std::memory_order_relaxed);
+  p_->m_dels.store(0, std::memory_order_relaxed);
+  p_->m_get_hits.store(0, std::memory_order_relaxed);
+  p_->m_get_misses.store(0, std::memory_order_relaxed);
+  p_->m_wal_bytes.store(0, std::memory_order_relaxed);
+  p_->m_sst_flushes.store(0, std::memory_order_relaxed);
+  p_->m_compactions.store(0, std::memory_order_relaxed);
+  if (reset_cache_stats) p_->tcache.reset_stats();
 }
 
 } // namespace uringkv
