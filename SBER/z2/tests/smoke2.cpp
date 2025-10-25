@@ -1,138 +1,120 @@
-// tests/smoke.cpp
-#include <catch2/catch_test_macros.hpp>
+// tests/smoke_basic.cpp
+#ifdef __has_include
+#  if __has_include(<catch2/catch_all.hpp>)
+#    include <catch2/catch_all.hpp>
+#  else
+#    include <catch2/catch.hpp>
+#  endif
+#endif
+
+#include "kv.hpp"
+#include "sst/manifest.hpp"
+
 #include <filesystem>
 #include <string>
 #include <vector>
-#include <optional>
-#include <system_error>
-#include <cstring>
-#include <array>
-
-#include <unistd.h>   // mkdtemp
-#include <stdlib.h>   // mkdtemp
-
-#include "kv.hpp"
-#include "sst/manifest.hpp" // list_sst_sorted
+#include <unistd.h>
 
 using namespace uringkv;
 namespace fs = std::filesystem;
 
-// Создание временного каталога (Linux): mkdtemp безопасно подставит уникальный суффикс
-static std::string make_tmp_dir() {
-  std::string tmpl = (fs::temp_directory_path() / "uringkv_smoke_XXXXXX").string();
-
-  // mkdtemp требует char* с изменяемой памятью и нулём в конце
-  std::vector<char> buf(tmpl.begin(), tmpl.end());
-  buf.push_back('\0');
-
-  char* res = ::mkdtemp(buf.data());
-  REQUIRE(res != nullptr); // если не удалось — тест падает с сообщением от Catch2
-
-  return std::string(res);
+// --------- helpers ---------
+static std::string mktemp_dir(const char* prefix) {
+  auto base = fs::temp_directory_path();
+  // pid в имени, чтобы тесты параллельно не пересекались
+  for (int i=0;i<1000;++i) {
+    auto p = base / (std::string(prefix) + std::to_string(::getpid()) + "_" + std::to_string(i));
+    std::error_code ec;
+    if (fs::create_directories(p, ec)) return p.string();
+  }
+  // fallback (почти невозможен)
+  auto p = base / (std::string(prefix) + "fallback_" + std::to_string(::getpid()));
+  fs::create_directories(p);
+  return p.string();
 }
 
-TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]") {
-  const std::string root = make_tmp_dir();
-  const std::string wal = (fs::path(root) / "wal").string();
-  const std::string sst = (fs::path(root) / "sst").string();
-
-  // Низкий порог flush, чтобы легко получить SST
-  KVOptions opts;
-  opts.path                       = root;
-  opts.use_uring                 = false;
-  opts.uring_queue_depth         = 64;
-  opts.wal_max_segment_bytes     = 2ull * 1024 * 1024;
-  opts.sst_flush_threshold_bytes = 4 * 1024;  // 4KB
-  opts.table_cache_capacity      = 8;
-  opts.background_compaction     = false;     // без фоновых потоков — детерминированно
-  opts.l0_compact_threshold      = 4;
-  opts.flush_mode                = FlushMode::FDATASYNC;
-  opts.final_flush_on_close      = false;     // <-- ВАЖНО: чтобы деструктор не делал финальный flush
-
-  // 1) init
-  {
-    KV kv(opts);
-    REQUIRE(kv.init_storage_layout());
-  }
-  REQUIRE(fs::exists(root));
-  REQUIRE(fs::exists(wal));
-  REQUIRE(fs::exists(sst));
-
-  // 2) put/get
-  {
-    KV kv(opts);
-    REQUIRE(kv.init_storage_layout());
-
-    REQUIRE(kv.put("a", "1"));
-    REQUIRE(kv.put("b", "2"));
-    REQUIRE(kv.put("c", "3"));
-
-    auto va = kv.get("a");
-    auto vb = kv.get("b");
-    auto vc = kv.get("c");
-    REQUIRE(va.has_value());
-    REQUIRE(vb.has_value());
-    REQUIRE(vc.has_value());
-    REQUIRE(*va == "1");
-    REQUIRE(*vb == "2");
-    REQUIRE(*vc == "3");
-
-    // scan
-    auto items = kv.scan("a", "z");
-    REQUIRE(items.size() >= 3);
-    bool has_a=false, has_b=false, has_c=false;
-    for (size_t i=0;i<items.size();++i) {
-      if (i>0) REQUIRE(items[i-1].key <= items[i].key); // отсортировано
-      if (items[i].key == "a" && items[i].value == "1") has_a = true;
-      if (items[i].key == "b" && items[i].value == "2") has_b = true;
-      if (items[i].key == "c" && items[i].value == "3") has_c = true;
-    }
-    REQUIRE(has_a);
-    REQUIRE(has_b);
-    REQUIRE(has_c);
-  }
-
-  // 3) del + check
-  {
-    KV kv(opts);
-    REQUIRE(kv.init_storage_layout());
-    REQUIRE(kv.del("b"));
-    auto vb = kv.get("b");
-    REQUIRE_FALSE(vb.has_value());
-  }
-
-  // 4) persistence after reopen (WAL replay)
-  {
-    KV kv(opts);
-    REQUIRE(kv.init_storage_layout());
-    // "a" -> "1", "b" -> tombstone, "c" -> "3"
-    auto va = kv.get("a");
-    auto vb = kv.get("b");
-    auto vc = kv.get("c");
-    REQUIRE(va.has_value());
-    REQUIRE_FALSE(vb.has_value());
-    REQUIRE(vc.has_value());
-    REQUIRE(*va == "1");
-    REQUIRE(*vc == "3");
-  }
-
-  // 5) trigger flush to SST (маленький порог)
-  {
-    KV kv(opts);
-    REQUIRE(kv.init_storage_layout());
-    for (int i=0;i<200;++i) {
-      REQUIRE(kv.put("k" + std::to_string(i), std::string(64, 'x'))); // ~13kB всего
-    }
-    // при разрушении kv произойдёт финальный flush (final_flush_on_close = true)
-  }
-
-  // Проверим, что появились файлы *.sst
-  {
-    auto names = list_sst_sorted(sst);
-    REQUIRE(names.size() >= 1);
-  }
-
-  // cleanup
+static std::vector<fs::path> list_wals(const fs::path& wal_dir){
+  std::vector<fs::path> out;
   std::error_code ec;
-  fs::remove_all(root, ec); // на CI не валим тест, если не получилось удалить
+  if (!fs::exists(wal_dir, ec)) return out;
+  for (auto& e : fs::directory_iterator(wal_dir, ec)){
+    if (ec) break;
+    if (e.is_regular_file() && e.path().extension()==".wal") out.push_back(e.path());
+  }
+  return out;
+}
+
+// --------- tests ---------
+
+TEST_CASE("basic put/get") {
+  auto dir = mktemp_dir("uringkv_smoke_");
+  KV kv({.path = dir, .background_compaction=false});  // детерминированнее
+  REQUIRE(kv.init_storage_layout());
+
+  REQUIRE(kv.put("a","1"));
+  REQUIRE(kv.put("b","2"));
+  REQUIRE(kv.get("a").value() == "1");
+  REQUIRE(kv.get("b").value() == "2");
+}
+
+TEST_CASE("overwrite and delete") {
+  auto dir = mktemp_dir("uringkv_overdel_");
+  KV kv({.path = dir, .background_compaction=false});
+  REQUIRE(kv.init_storage_layout());
+
+  REQUIRE(kv.put("k1","v1"));
+  REQUIRE(kv.put("k1","v2"));                 // overwrite
+  REQUIRE(kv.get("k1").value() == "v2");
+  REQUIRE(kv.del("k1"));                      // delete
+  REQUIRE_FALSE(kv.get("k1").has_value());
+}
+
+TEST_CASE("flush MemTable to SST and recover") {
+  auto dir = mktemp_dir("uringkv_flush_");
+
+  {
+    KV kv({
+      .path=dir,
+      .sst_flush_threshold_bytes=1*1024,      // маленький порог -> гарантированный flush
+      .background_compaction=false
+    });
+    REQUIRE(kv.init_storage_layout());
+
+    for (int i=0;i<200;++i) {
+      REQUIRE(kv.put("k"+std::to_string(i), std::string(100, 'a' + (i%26))));
+    }
+    REQUIRE(kv.del("k3"));
+    REQUIRE(kv.del("k5"));
+  } // деструктор сделает final_flush_on_close (по умолчанию true)
+
+  {
+    KV kv({.path=dir, .background_compaction=false});
+    // существующие
+    REQUIRE(kv.get("k2").has_value());
+    // удалённые
+    REQUIRE_FALSE(kv.get("k3").has_value());
+    REQUIRE_FALSE(kv.get("k5").has_value());
+  }
+}
+
+TEST_CASE("WAL: purged after MemTable flush") {
+  auto dir = mktemp_dir("uringkv_purge_");
+  const auto wal_dir = fs::path(dir)/"wal";
+
+  {
+    // маленький порог flush -> MemTable уйдёт в SST
+    KV kv({
+      .path=dir,
+      .sst_flush_threshold_bytes=2*1024,
+      .background_compaction=false
+    });
+    REQUIRE(kv.init_storage_layout());
+    for (int i=0;i<200;++i)
+      REQUIRE(kv.put("k"+std::to_string(i), std::string(64,'a'+(i%26))));
+  } // финальный flush + purge WAL
+
+  // после завершения должен остаться один новый WAL-файл с заголовком (4К)
+  auto files = list_wals(wal_dir);
+  REQUIRE(files.size() == 1);
+  REQUIRE(fs::file_size(files[0]) == 4096);
 }
