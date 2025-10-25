@@ -126,6 +126,16 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(spdlog)
 
+
+set(XXHASH_BUILD_XXHSUM OFF CACHE BOOL "" FORCE)
+set(XXHASH_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  xxhash
+  GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+  GIT_TAG v0.8.2
+)
+FetchContent_MakeAvailable(xxhash)
+
 option(URINGKV_ENABLE_TESTS "Build tests" ON)
 
 if(URINGKV_ENABLE_TESTS)

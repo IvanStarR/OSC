@@ -8,32 +8,35 @@
 namespace uringkv {
 
 struct KVOptions {
-    std::string path = "./data";
+  std::string path = "./data"; 
+
+  bool use_uring = false;
+  unsigned uring_queue_depth = 256;
 };
 
 struct RangeItem {
-    std::string key;
-    std::string value;
+  std::string key;
+  std::string value;
 };
 
 class KV {
-   public:
-    explicit KV(const KVOptions& opts);
-    ~KV();
+public:
+  explicit KV(const KVOptions &opts);
+  ~KV();
 
-    KV(const KV&) = delete;
-    KV& operator=(const KV&) = delete;
+  KV(const KV &) = delete;
+  KV &operator=(const KV &) = delete;
 
-    bool put(std::string_view key, std::string_view value);
-    std::optional<std::string> get(std::string_view key);
-    bool del(std::string_view key);
-    std::vector<RangeItem> scan(std::string_view start, std::string_view end);
+  bool put(std::string_view key, std::string_view value);
+  std::optional<std::string> get(std::string_view key);
+  bool del(std::string_view key);
+  std::vector<RangeItem> scan(std::string_view start, std::string_view end);
 
-    bool init_storage_layout();
+  bool init_storage_layout();
 
-   private:
-    struct Impl;
-    Impl* p_;
+private:
+  struct Impl;
+  Impl *p_;
 };
 
-}// namespace uringkv
+} // namespace uringkv

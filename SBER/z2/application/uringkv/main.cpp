@@ -8,24 +8,36 @@ using namespace uringkv;
 static void usage(){
   std::cout << "uringkv\n"
             << "Usage:\n"
-            << "  uringkv --path DIR init\n"
-            << "  uringkv --path DIR put <key> <value>\n"
-            << "  uringkv --path DIR get <key>\n"
-            << "  uringkv --path DIR del <key>\n"
-            << "  uringkv --path DIR scan <start> <end>\n";
+            << "  uringkv --path DIR [--uring] [--qd N] init\n"
+            << "  uringkv --path DIR [--uring] [--qd N] put <key> <value>\n"
+            << "  uringkv --path DIR [--uring] [--qd N] get <key>\n"
+            << "  uringkv --path DIR [--uring] [--qd N] del <key>\n"
+            << "  uringkv --path DIR [--uring] [--qd N] scan <start> <end>\n";
 }
 
 int main(int argc, char** argv){
   if (argc < 3) { usage(); return 1; }
 
   std::string dir;
+  bool use_uring=false;
+  unsigned qd=256;
+
   int i=1;
   if (std::string(argv[i]) == "--path" && i+1 < argc) { dir = argv[i+1]; i+=2; }
   else { usage(); return 1; }
 
-  KV kv({.path = dir});
+  while (i < argc && std::string(argv[i]).rfind("--",0)==0) {
+    std::string opt = argv[i];
+    if (opt == "--uring") { use_uring = true; ++i; }
+    else if (opt == "--qd" && i+1 < argc) { qd = static_cast<unsigned>(std::stoul(argv[i+1])); i+=2; }
+    else break;
+  }
 
+  KV kv({.path = dir, .use_uring = use_uring, .uring_queue_depth = qd});
+
+  if (i >= argc) { usage(); return 1; }
   std::string cmd = argv[i];
+
   if (cmd == "init") {
     if (kv.init_storage_layout()) { spdlog::info("initialized at {}", dir); return 0; }
     spdlog::error("failed to init at {}", dir); return 2;

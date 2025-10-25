@@ -1,4 +1,4 @@
 application(NAME uringkv TYPE EXECUTABLE
-            DEPENDENCIES ${APP_NAME}.core spdlog::spdlog fmt::fmt
+            DEPENDENCIES ${APP_NAME}.core spdlog::spdlog fmt::fmt xxhash::xxhash
             INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/include)
             
