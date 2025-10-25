@@ -20,6 +20,7 @@ extern "C" {
 #include <solv/repo.h>
 #include <solv/repo_rpmmd.h>
 #include <solv/selection.h>
+#include <solv/solv_xfopen.h>
 #include <solv/util.h>
 }
 
@@ -119,34 +120,62 @@ static bool parse_repomd(const string& repomd, RpmmdPaths& out) {
     return !out.primary.empty();
 }
 
-static bool repo_add_from_repodata_dir(Repo* repo, const string& dir) {
-    string repomd = join_path(dir, "repomd.xml");
+static bool repo_add_from_repodata_dir(Repo* repo, const std::string& dir) {
+    std::string repomd = join_path(dir, "repomd.xml");
     if (!std::filesystem::exists(repomd) && std::filesystem::exists(repomd + ".gz"))
         repomd += ".gz";
+
     RpmmdPaths p;
     if (!parse_repomd(repomd, p)) {
         // fallback: подобрать файлы по маске
         for (auto& it : std::filesystem::directory_iterator(dir)) {
             auto bn = it.path().filename().string();
-            if (bn.find("primary.xml") != string::npos)
+            if (bn.find("primary.xml") != std::string::npos)
                 p.primary = bn;
-            else if (bn.find("filelists.xml") != string::npos)
+            else if (bn.find("filelists") != std::string::npos)
                 p.filelists = bn;
-            else if (bn.find("other.xml") != string::npos)
+            else if (bn.find("other") != std::string::npos)
                 p.other = bn;
         }
         if (p.primary.empty())
             return false;
     }
-    const string primary = join_path(dir, p.primary);
-    const string filelists = p.filelists.empty() ? "" : join_path(dir, p.filelists);
-    const string other = p.other.empty() ? "" : join_path(dir, p.other);
 
-    int flags = 0;// libsolv сам разберёт .gz
-    if (repo_add_rpmmd(
-            repo, primary.c_str(), filelists.empty() ? nullptr : filelists.c_str(), other.empty() ? nullptr : other.c_str(), flags)
-        != 0)
-        return false;
+    const std::string primary = join_path(dir, p.primary);
+    const std::string filelists = p.filelists.empty() ? "" : join_path(dir, p.filelists);
+    const std::string other = p.other.empty() ? "" : join_path(dir, p.other);
+
+    int flags = 0;// libsolv сам поймёт .gz/.xz через solv_xfopen
+
+    // primary
+    if (!primary.empty()) {
+        FILE* fp = solv_xfopen(primary.c_str(), "r");
+        if (!fp) {
+            spdlog::warn("cannot open {}", primary);
+            return false;
+        }
+        if (repo_add_rpmmd(repo, fp, nullptr, flags) != 0) {
+            fclose(fp);
+            return false;
+        }
+        fclose(fp);
+    }
+    // filelists
+    if (!filelists.empty()) {
+        FILE* fp = solv_xfopen(filelists.c_str(), "r");
+        if (fp) {
+            repo_add_rpmmd(repo, fp, nullptr, flags);
+            fclose(fp);
+        }
+    }
+    // other
+    if (!other.empty()) {
+        FILE* fp = solv_xfopen(other.c_str(), "r");
+        if (fp) {
+            repo_add_rpmmd(repo, fp, nullptr, flags);
+            fclose(fp);
+        }
+    }
     return true;
 }
 
@@ -196,7 +225,7 @@ bool build_graphs_with_libsolv(const string& repoids_csv, const string& archs_cs
         for (auto& dir : repodata_dirs) {
             Repo* r = repo_create(pool, (rid + ":" + dir).c_str());
             if (repo_add_from_repodata_dir(r, dir)) {
-                repoInternalize(r);
+                repo_internalize(r);
                 repos_loaded++;
             } else {
                 spdlog::warn("skip repo (bad repodata): {}", dir);
