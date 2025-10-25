@@ -4,16 +4,15 @@ project(rpm_graph_fast LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---------- fmt + spdlog через FetchContent ----------
 include(FetchContent)
 
-# ---------- fmt ----------
 FetchContent_Declare(fmt
   GIT_REPOSITORY https://github.com/fmtlib/fmt.git
   GIT_TAG 10.2.1
 )
 FetchContent_MakeAvailable(fmt)
 
-# ---------- spdlog (используем внешний fmt) ----------
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(spdlog
   GIT_REPOSITORY https://github.com/gabime/spdlog.git
@@ -21,35 +20,20 @@ FetchContent_Declare(spdlog
 )
 FetchContent_MakeAvailable(spdlog)
 
-# ---------- tinyxml2 ----------
-FetchContent_Declare(tinyxml2
-  GIT_REPOSITORY https://github.com/leethomason/tinyxml2.git
-  GIT_TAG 10.0.0
-)
-FetchContent_MakeAvailable(tinyxml2)
+# ---------- системные tinyxml2 + libsolv ----------
+find_package(TinyXML2 REQUIRED)
 
-# ---------- libsolv (втягиваем исходники и собираем как сабпроект) ----------
-# Требует: zlib, liblzma (xz), libxml2 в системе
-FetchContent_Declare(libsolv
-  GIT_REPOSITORY https://github.com/openSUSE/libsolv.git
-  GIT_TAG 0.7.29   # или актуальная стабильная
-)
-# Параметры сборки libsolv
-set(ENABLE_RPMMD ON  CACHE BOOL "" FORCE)  # чтение repodata (primary/filelists/other)
-set(ENABLE_STATIC OFF CACHE BOOL "" FORCE)
-# при необходимости можно включить NARROWPROTO/DEBIAN/ARCH — нам не надо
-FetchContent_MakeAvailable(libsolv)
+# через pkg-config — самый надёжный способ для libsolv
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBSOLV REQUIRED IMPORTED_TARGET libsolv libsolvext)
 
-# После MakeAvailable у нас есть цели 'solv' и 'solvext'
-# (они слинкуются с системными zlib/liblzma/libxml2)
-
-# ---------- Твой исполняемый файл ----------
+# ---------- ваш таргет ----------
 add_executable(rpm_graph_fast
   src/main.cpp
   src/exec.cpp
   src/thread_pool.cpp
   src/cache.cpp
-  src/repoquery.cpp       # если оставляешь старый backend
+  src/repoquery.cpp       # если оставили старый backend
   src/graph.cpp
   src/json_writer.cpp
   src/solv_backend.cpp    # libsolv backend
@@ -58,15 +42,13 @@ target_include_directories(rpm_graph_fast PRIVATE include)
 
 target_link_libraries(rpm_graph_fast
   PRIVATE
-    # наши фетч-зависимости
     spdlog::spdlog_header_only
     fmt::fmt
-    tinyxml2::tinyxml2
-    # библиотеки libsolv из сабпроекта
-    solv
-    solvext
+    TinyXML2::TinyXML2
+    PkgConfig::LIBSOLV           # даёт и libsolv, и libsolvext
 )
 
+# (опционально) приглушить логи в Release
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-  add_compile_definitions(SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO)
+  target_compile_definitions(rpm_graph_fast PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO)
 endif()
