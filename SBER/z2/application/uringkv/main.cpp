@@ -183,7 +183,7 @@ struct BenchStats {
 };
 
 static void bench_worker(unsigned tid, const Args& a, uringkv::KVOptions base_opts,
-                         uint64_t ops, uint32_t pct_put, uint32_t pct_get, uint32_t pct_del,
+                         uint64_t ops, uint32_t pct_put, uint32_t pct_get, [[maybe_unused]]uint32_t pct_del,
                          BenchStats& out)
 {
   uringkv::KV kv(base_opts);
