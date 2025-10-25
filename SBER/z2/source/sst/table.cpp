@@ -1,10 +1,12 @@
 #include "sst/table.hpp"
 #include "util.hpp"
+#include "sst/index.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 namespace uringkv {
@@ -15,6 +17,7 @@ SstTable::SstTable(std::string path) : path_(std::move(path)) {
 }
 
 SstTable::~SstTable() {
+  index_.close();
   if (fd_ >= 0) ::close(fd_);
 }
 
@@ -29,20 +32,9 @@ bool SstTable::load_footer_and_index() {
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return false;
   if (std::memcmp(f.magic, kSstMagic, 7) != 0 || f.version != kSstVersion) return false;
 
-  if (::lseek(fd_, (off_t)f.index_offset, SEEK_SET) < 0) return false;
-  uint32_t count = 0;
-  if (::read(fd_, &count, sizeof(count)) != (ssize_t)sizeof(count)) return false;
-
-  index_.clear(); index_.reserve(count);
-  for (uint32_t i=0;i<count;++i) {
-    uint32_t klen=0; uint64_t off=0;
-    if (::read(fd_, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
-    if (::read(fd_, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
-    std::string key; key.resize(klen);
-    if (klen && ::read(fd_, key.data(), klen) != (ssize_t)klen) return false;
-    index_.push_back({std::move(key), off});
-  }
-  return !index_.empty();
+  // mmap hash-index block
+  if (!index_.open(fd_, f.index_offset, f.index_count)) return false;
+  return index_.good();
 }
 
 bool SstTable::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, std::string& v) const {
@@ -57,23 +49,27 @@ bool SstTable::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, st
 std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view key) const {
   if (!good()) return std::nullopt;
 
-  auto it = std::upper_bound(index_.begin(), index_.end(), key,
-      [](std::string_view k, const SstIndexEntry& e){ return k < e.key; });
-  if (it != index_.begin()) --it;
+  const uint64_t h = sst_key_hash(key.data(), key.size());
+  const uint64_t n = index_.table_size();
+  const auto*    T = index_.table();
+  const uint64_t mask = n - 1;
 
-  SstRecordMeta m{}; std::string k; std::string v;
-  uint64_t off = it->offset;
-
-  while (true) {
-    if (!read_record_at(off, m, k, v)) break;
-    off += sizeof(m) + m.klen + m.vlen;
-
-    if (k == key) {
-      if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
-      if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
-      return std::make_pair(SST_FLAG_PUT, std::move(v));
+  // linear probing
+  uint64_t pos = h & mask;
+  for (uint64_t step=0; step<n; ++step) {
+    const auto& e = T[pos];
+    if (e.h == 0) break;            // пустой слот => не найдено
+    if (e.h == h) {
+      SstRecordMeta m{}; std::string k; std::string v;
+      if (!read_record_at(e.off, m, k, v)) return std::nullopt;
+      if (k == key) {
+        if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
+        if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
+        return std::make_pair(SST_FLAG_PUT, std::move(v));
+      }
+      // хеш совпал, но ключ другой — коллизия, пробуем дальше
     }
-    if (k > key) break;
+    pos = (pos + 1) & mask;
   }
   return std::nullopt;
 }

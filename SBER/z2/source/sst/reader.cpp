@@ -1,12 +1,11 @@
 #include "sst/reader.hpp"
 #include "sst/footer.hpp"
+#include "sst/index.hpp"
 #include "util.hpp"
 #include <xxhash.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <vector>
-#include <unordered_map>
 #include <algorithm>
 #include <cstring>
 
@@ -17,7 +16,7 @@ SstReader::SstReader(const std::string& path) : path_(path) {
   if (fd_ >= 0) (void)load_footer_and_index();
 }
 
-SstReader::~SstReader() { if (fd_ >= 0) ::close(fd_); }
+SstReader::~SstReader() { index_.close(); if (fd_ >= 0) ::close(fd_); }
 
 bool SstReader::load_footer_and_index() {
   if (fd_ < 0) return false;
@@ -31,21 +30,9 @@ bool SstReader::load_footer_and_index() {
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return false;
   if (std::memcmp(f.magic, kSstMagic, 7) != 0 || f.version != kSstVersion) return false;
 
-  // читаем индексный блок
-  if (::lseek(fd_, (off_t)f.index_offset, SEEK_SET) < 0) return false;
-  uint32_t count = 0;
-  if (::read(fd_, &count, sizeof(count)) != (ssize_t)sizeof(count)) return false;
-
-  index_.clear(); index_.reserve(count);
-  for (uint32_t i=0;i<count;++i) {
-    uint32_t klen=0; uint64_t off=0;
-    if (::read(fd_, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
-    if (::read(fd_, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
-    std::string key; key.resize(klen);
-    if (klen && ::read(fd_, key.data(), klen) != (ssize_t)klen) return false;
-    index_.push_back({std::move(key), off});
-  }
-  return !index_.empty();
+  // mmap hash-index block
+  if (!index_.open(fd_, f.index_offset, f.index_count)) return false;
+  return index_.good();
 }
 
 bool SstReader::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, std::string& v) {
@@ -58,51 +45,48 @@ bool SstReader::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, s
 }
 
 std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view key) {
-  if (fd_ < 0) return std::nullopt;
-  if (index_.empty()) return std::nullopt;
+  if (fd_ < 0 || !index_.good()) return std::nullopt;
 
-  // бинарный поиск по индексу
-  auto it = std::upper_bound(index_.begin(), index_.end(), key,
-      [](std::string_view k, const SstIndexEntry& e){ return k < e.key; });
+  const uint64_t h = sst_key_hash(key.data(), key.size());
+  const uint64_t n = index_.table_size();
+  const auto*    T = index_.table();
+  const uint64_t mask = n - 1;
 
-  if (it != index_.begin()) --it; // ближайший <= key
-  // теперь читаем от смещения `it->offset` последовательно, пока ключи не превысят искомый
-  SstRecordMeta m{}; std::string k; std::string v;
-  uint64_t off = it->offset;
-
-  while (true) {
-    off_t cur = ::lseek(fd_, 0, SEEK_CUR); (void)cur;
-    if (!read_record_at(off, m, k, v)) break;
-    // подготовим оффсет следующей записи
-    off += sizeof(m) + m.klen + m.vlen;
-
-    if (k == key) {
-      // проверим checksum
-      if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
-      if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
-      return std::make_pair(SST_FLAG_PUT, std::move(v));
+  uint64_t pos = h & mask;
+  for (uint64_t step=0; step<n; ++step) {
+    const auto& e = T[pos];
+    if (e.h == 0) break;
+    if (e.h == h) {
+      SstRecordMeta m{}; std::string k; std::string v;
+      if (!read_record_at(e.off, m, k, v)) return std::nullopt;
+      if (k == key) {
+        if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
+        if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
+        return std::make_pair(SST_FLAG_PUT, std::move(v));
+      }
     }
-    if (k > key) break; // прошли нужный ключ
+    pos = (pos + 1) & mask;
   }
-
   return std::nullopt;
 }
 
 std::vector<std::pair<std::string,std::string>> SstReader::scan(std::string_view start, std::string_view end) {
+  // Для итерации 2 оставим простой линейный проход без использования индекса.
+  // (Оптимизация скана будет в следующем пункте работ.)
   std::vector<std::pair<std::string,std::string>> out;
-  if (fd_ < 0 || index_.empty()) return out;
 
-  // найдём первую точку индекса для start
-  auto it = index_.begin();
-  if (!start.empty()) {
-    it = std::lower_bound(index_.begin(), index_.end(), start,
-        [](const SstIndexEntry& e, std::string_view s){ return e.key < s; });
-    if (it != index_.begin()) --it;
-  }
+  if (fd_ < 0) return out;
 
-  // линейно читаем записи, пока ключ <= end
-  uint64_t off = it->offset;
-  while (true) {
+  // Простой последовательный проход от начала данных до начала индекса (f.index_offset)
+  off_t endpos = ::lseek(fd_, 0, SEEK_END);
+  if (endpos < (off_t)sizeof(SstFooter)) return out;
+  if (::lseek(fd_, endpos - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return out;
+
+  SstFooter f{};
+  if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return out;
+
+  uint64_t off = 0;
+  while (off < f.index_offset) {
     SstRecordMeta m{}; std::string k; std::string v;
     if (!read_record_at(off, m, k, v)) break;
     off += sizeof(m) + m.klen + m.vlen;
@@ -111,11 +95,9 @@ std::vector<std::pair<std::string,std::string>> SstReader::scan(std::string_view
       if (!end.empty() && k > end) break;
       continue;
     }
-
     if (m.checksum != dummy_checksum(k, v)) break;
     if (m.flags == SST_FLAG_PUT) out.emplace_back(std::move(k), std::move(v));
   }
-
   std::sort(out.begin(), out.end(), [](auto& a, auto& b){ return a.first < b.first; });
   return out;
 }
