@@ -54,11 +54,18 @@ TEST_CASE("iter1: init storage layout") {
 
   // держим KV в отдельном scope, чтобы деструктор отработал ДО файловых проверок
   {
-    KV kv({
-      .path = dir,
-      .background_compaction = false,
-      .final_flush_on_close  = false // ничего не флашим в этом smoke
-    });
+    KVOptions opts;
+    opts.path = dir;
+    opts.use_uring = false;
+    opts.uring_queue_depth = 256;
+    opts.wal_max_segment_bytes = 64ull * 1024 * 1024;
+    opts.sst_flush_threshold_bytes = 4ull * 1024 * 1024;
+    opts.final_flush_on_close = false;   // ничего не флашим в этом smoke
+    opts.table_cache_capacity = 64;
+    opts.background_compaction = false;  // итерация 1 — без фона
+    opts.l0_compact_threshold = 6;
+
+    KV kv(opts);
     REQUIRE(kv.init_storage_layout());
   }
 
@@ -73,11 +80,14 @@ TEST_CASE("iter1: basic put/get/del") {
   const auto dir = mktemp_dir("uringkv_basic_");
 
   {
-    KV kv({
-      .path = dir,
-      .background_compaction = false,
-      .final_flush_on_close  = false // чтобы деструктор не делал ничего тяжёлого
-    });
+    KVOptions opts;
+    opts.path = dir;
+    opts.use_uring = false;
+    opts.sst_flush_threshold_bytes = 4ull * 1024 * 1024;
+    opts.final_flush_on_close = false;   // деструктор не делает тяжёлый flush
+    opts.background_compaction = false;
+
+    KV kv(opts);
     REQUIRE(kv.init_storage_layout());
 
     REQUIRE(kv.put("a","1"));
@@ -103,12 +113,14 @@ TEST_CASE("iter1: WAL replay persistence (no SST flush)") {
 
   // шаг 1: пишем в WAL, НО НЕ флашим MemTable в SST
   {
-    KV kv({
-      .path = dir,
-      .background_compaction = false,
-      .final_flush_on_close  = false,     // важно: чтобы MemTable осталась в WAL
-      .sst_flush_threshold_bytes = 1ull<<30 // заведомо недостижимый порог
-    });
+    KVOptions opts;
+    opts.path = dir;
+    opts.use_uring = false;
+    opts.sst_flush_threshold_bytes = (1ull<<30); // заведомо недостижимый порог
+    opts.final_flush_on_close = false;           // важно: оставить в WAL
+    opts.background_compaction = false;
+
+    KV kv(opts);
     REQUIRE(kv.init_storage_layout());
     REQUIRE(kv.put("x","1"));
     REQUIRE(kv.put("y","2"));
@@ -117,11 +129,13 @@ TEST_CASE("iter1: WAL replay persistence (no SST flush)") {
 
   // шаг 2: переоткрываем и проверяем replay
   {
-    KV kv({
-      .path = dir,
-      .background_compaction = false,
-      .final_flush_on_close  = false
-    });
+    KVOptions opts;
+    opts.path = dir;
+    opts.use_uring = false;
+    opts.final_flush_on_close = false;
+    opts.background_compaction = false;
+
+    KV kv(opts);
     REQUIRE_FALSE(kv.get("x").has_value()); // tombstone из WAL
     auto vy = kv.get("y");
     REQUIRE(vy.has_value());
@@ -137,12 +151,14 @@ TEST_CASE("iter1: MemTable flush creates SST and purges WAL") {
   const auto sst_dir = fs::path(dir) / "sst";
 
   {
-    KV kv({
-      .path = dir,
-      .sst_flush_threshold_bytes = 2*1024, // низкий порог — гарантированный flush
-      .background_compaction = false,
-      .final_flush_on_close  = true
-    });
+    KVOptions opts;
+    opts.path = dir;
+    opts.use_uring = false;
+    opts.sst_flush_threshold_bytes = 2 * 1024; // низкий порог — гарантированный flush
+    opts.final_flush_on_close = true;
+    opts.background_compaction = false;
+
+    KV kv(opts);
     REQUIRE(kv.init_storage_layout());
 
     for (int i=0;i<200;++i) {
