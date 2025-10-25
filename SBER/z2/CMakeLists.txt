@@ -166,29 +166,60 @@ else()
 endif()
 
 
-# Версию можно закрепить под ваш образ (стабильно 2.6)
 set(URING_GIT_TAG "liburing-2.6" CACHE STRING "liburing tag")
 FetchContent_Declare(
   liburing
   GIT_REPOSITORY https://github.com/axboe/liburing.git
   GIT_TAG        ${URING_GIT_TAG}
-  # Быстрее: не тянуть лишние тесты/доки
-  SOURCE_SUBDIR  .
 )
-# Некоторые старые версии liburing требуют настроек сборки:
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-# Подтягиваем и добавляем в проект
-FetchContent_MakeAvailable(liburing)
+FetchContent_GetProperties(liburing)
+if (NOT liburing_POPULATED)
+  FetchContent_Populate(liburing)
 
-# Определяем целевой таргет библиотеки (в разных версиях он называется по-разному)
-set(URING_TARGET "")
-if (TARGET uring)           # новое имя таргета
-  set(URING_TARGET uring)
-elseif (TARGET liburing)    # альтернативное
-  set(URING_TARGET liburing)
+  # Если у апстрима есть собственный CMake, подключим его:
+  if (EXISTS "${liburing_SOURCE_DIR}/CMakeLists.txt")
+    add_subdirectory(${liburing_SOURCE_DIR} ${liburing_BINARY_DIR}/liburing EXCLUDE_FROM_ALL)
+  else()
+    # --- Фолбэк: соберём статическую библиотеку сами ---
+    file(GLOB LIBURING_SOURCES
+      "${liburing_SOURCE_DIR}/src/queue.c"
+      "${liburing_SOURCE_DIR}/src/register.c"
+      "${liburing_SOURCE_DIR}/src/setup.c"
+      "${liburing_SOURCE_DIR}/src/syscall.c"
+      "${liburing_SOURCE_DIR}/src/version.c"
+      "${liburing_SOURCE_DIR}/src/compat.c"
+    )
+
+    if (LIBURING_SOURCES STREQUAL "")
+      message(FATAL_ERROR "liburing fetched, but sources not found under src/*.c")
+    endif()
+
+    add_library(liburing_external STATIC ${LIBURING_SOURCES})
+    target_include_directories(liburing_external PUBLIC
+      "${liburing_SOURCE_DIR}/src/include"   # <liburing.h>
+      "${liburing_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(liburing_external PRIVATE _GNU_SOURCE)
+    set_target_properties(liburing_external PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  endif()
 endif()
 
+# Определим имя таргета, с которым будем линковаться
+set(URING_TARGET "")
+if (TARGET uring)
+  set(URING_TARGET uring)
+elseif (TARGET liburing)
+  set(URING_TARGET liburing)
+elseif (TARGET liburing_external)
+  set(URING_TARGET liburing_external)
+endif()
+
+if (URING_TARGET)
+  message(STATUS "Fetched liburing target: ${URING_TARGET}")
+else()
+  message(FATAL_ERROR "liburing fetched, but no library target was created")
+endif()
 
 option(URINGKV_ENABLE_TESTS "Build tests" ON)
 
