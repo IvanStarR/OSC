@@ -19,7 +19,7 @@ public:
   SstTable(const SstTable&) = delete;
   SstTable& operator=(const SstTable&) = delete;
 
-  bool good() const { return fd_ >= 0 && !index_.empty(); }
+  bool good() const { return fd_ >= 0 && index_.good(); }
   const std::string& path() const { return path_; }
 
   // Возвращает {flag, value} или nullopt (ключ не найден / tombstone).

@@ -13,7 +13,7 @@ public:
   explicit SstReader(const std::string& path);
   ~SstReader();
 
-  bool good() const { return fd_ >= 0; }
+  bool good() const { return fd_ >= 0 && index_.good(); }
 
   std::optional<std::pair<uint32_t, std::string>> get(std::string_view key);
   std::vector<std::pair<std::string,std::string>> scan(std::string_view start, std::string_view end);
@@ -24,7 +24,7 @@ private:
 
   std::string path_;
   int fd_ = -1;
-  MmapHashIndex index_;        // загруженный индекс
+  MmapHashIndex index_;
 };
 
 } // namespace uringkv

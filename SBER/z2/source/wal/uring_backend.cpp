@@ -36,6 +36,28 @@ struct UringBackend::Impl {
       io_uring_queue_exit(&ring);
     }
   }
+
+  bool ensure_fixed_file(int fd) {
+    if (!ok) return false;
+    if (!files_registered) {
+      int fds[1] = { fd };
+      if (io_uring_register_files(&ring, fds, 1) == 0) {
+        files_registered = true;
+        registered_fd = fd;
+        return true;
+      }
+      return false;
+    }
+    if (registered_fd != fd) {
+      int fds[1] = { fd };
+      if (io_uring_register_files_update(&ring, 0, fds, 1) >= 0) {
+        registered_fd = fd;
+        return true;
+      }
+      return false;
+    }
+    return true;
+  }
 #else
   explicit Impl(unsigned) {}
   ~Impl() = default;
@@ -62,35 +84,11 @@ UringBackend& UringBackend::operator=(UringBackend&& o) noexcept {
 
 bool UringBackend::initialized() const noexcept { return p_ != nullptr; }
 
-#if URKV_HAVE_URING
-static bool ensure_fixed_file(UringBackend::Impl* p, int fd) {
-  if (!p->ok) return false;
-  if (!p->files_registered) {
-    int fds[1] = { fd };
-    if (io_uring_register_files(&p->ring, fds, 1) == 0) {
-      p->files_registered = true;
-      p->registered_fd = fd;
-      return true;
-    }
-    return false;
-  }
-  if (p->registered_fd != fd) {
-    int fds[1] = { fd };
-    if (io_uring_register_files_update(&p->ring, 0, fds, 1) >= 0) {
-      p->registered_fd = fd;
-      return true;
-    }
-    return false;
-  }
-  return true;
-}
-#endif
-
 bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
 #if URKV_HAVE_URING
   if (!p_ || !p_->ok) return false;
 
-  if (!ensure_fixed_file(p_, fd)) {
+  if (!p_->ensure_fixed_file(fd)) {
     // fallback: обычный путь через submit без fixed files
     io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
     if (!sqe) return false;
@@ -160,7 +158,7 @@ bool UringBackend::fsync(int fd) {
     p_->pending = 0;
   }
 
-  if (!ensure_fixed_file(p_, fd)) {
+  if (!p_->ensure_fixed_file(fd)) {
     io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
     if (!sqe) return false;
     io_uring_prep_fsync(sqe, fd, IORING_FSYNC_DATASYNC);

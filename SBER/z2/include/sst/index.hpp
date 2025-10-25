@@ -31,7 +31,8 @@ struct HashIndexEntry {
 inline constexpr uint32_t kHidxMagic   = 0x48494458u; // 'HIDX'
 inline constexpr uint32_t kHidxVersion = 1u;
 
-inline uint64_t sst_key_hash(const char* data, size_t len);
+// только объявление (НЕ inline): определение в source/sst/index.cpp
+uint64_t sst_key_hash(const char* data, size_t len);
 
 // ---- MMap wrapper over index block ----
 class MmapHashIndex {
