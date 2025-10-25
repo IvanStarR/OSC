@@ -1,3 +1,4 @@
+// source/wal/writer.cpp
 #include "wal/writer.hpp"
 #include "util.hpp"
 #include "wal/record.hpp"
@@ -79,6 +80,9 @@ WalWriter::WalWriter(WalWriter &&o) noexcept {
   max_segment_bytes_ = o.max_segment_bytes_;
   group_commit_bytes_ = o.group_commit_bytes_;
   flush_mode_ = o.flush_mode_;
+  sync_fsync_ = o.sync_fsync_;
+  sync_fdatasync_ = o.sync_fdatasync_;
+  sync_sfr_ = o.sync_sfr_;
 }
 
 WalWriter &WalWriter::operator=(WalWriter &&o) noexcept {
@@ -95,6 +99,9 @@ WalWriter &WalWriter::operator=(WalWriter &&o) noexcept {
     max_segment_bytes_ = o.max_segment_bytes_;
     group_commit_bytes_ = o.group_commit_bytes_;
     flush_mode_ = o.flush_mode_;
+    sync_fsync_ = o.sync_fsync_;
+    sync_fdatasync_ = o.sync_fdatasync_;
+    sync_sfr_ = o.sync_sfr_;
   }
   return *this;
 }
@@ -166,28 +173,45 @@ static inline bool posix_fdatasync(int fd) {
 
 bool WalWriter::fsync_backend() {
   if (use_uring_ && uring_.initialized()) {
-    if (flush_mode_ == FlushMode::FSYNC) return ::fsync(fd_) == 0;
-    return uring_.fsync(fd_);
+    // через io_uring всегда IORING_FSYNC_DATASYNC
+    bool ok = uring_.fsync(fd_);
+    if (ok) ++sync_fdatasync_;
+    return ok;
   }
   switch (flush_mode_) {
-    case FlushMode::FDATASYNC:       return posix_fdatasync(fd_);
-    case FlushMode::FSYNC:           return ::fsync(fd_) == 0;
+    case FlushMode::FDATASYNC: {
+      bool ok = posix_fdatasync(fd_);
+      if (ok) ++sync_fdatasync_;
+      return ok;
+    }
+    case FlushMode::FSYNC: {
+      bool ok = (::fsync(fd_) == 0);
+      if (ok) ++sync_fsync_;
+      return ok;
+    }
     case FlushMode::SYNC_FILE_RANGE: {
 #ifdef __linux__
       off_t end = ::lseek(fd_, 0, SEEK_END);
       if (end < 0) return false;
 #ifdef SYNC_FILE_RANGE_WRITE
-      if (::sync_file_range(fd_, 0, end, SYNC_FILE_RANGE_WRITE) != 0) return false;
+      int rc = ::sync_file_range(fd_, 0, end, SYNC_FILE_RANGE_WRITE);
+      if (rc == 0) { ++sync_sfr_; return true; }
+      else return false;
 #else
-      return posix_fdatasync(fd_);
+      bool ok = posix_fdatasync(fd_);
+      if (ok) ++sync_fdatasync_;
+      return ok;
 #endif
-      return true;
 #else
-      return ::fsync(fd_) == 0;
+      bool ok = (::fsync(fd_) == 0);
+      if (ok) ++sync_fsync_;
+      return ok;
 #endif
     }
   }
-  return ::fsync(fd_) == 0;
+  bool ok = (::fsync(fd_) == 0);
+  if (ok) ++sync_fsync_;
+  return ok;
 }
 
 bool WalWriter::append_(const WalRecordMeta &m, std::string_view k, std::string_view v) {

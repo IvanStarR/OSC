@@ -120,13 +120,67 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
   return std::nullopt;
 }
 
+// ---- Sparse index structures (must match writer) ----
+struct SparseIndexHeader {
+  uint32_t magic;   // 'SIDX'
+  uint32_t version; // 1
+  uint32_t count;   // number of entries
+};
+
+static constexpr uint32_t kSparseMagic   = 0x53494458u;
+static constexpr uint32_t kSparseVersion = 1u;
+
+static bool load_sparse_anchor(int fd, const SstFooter& f,
+                               const HashIndexHeader* hash_hdr,
+                               uint64_t& start_off,
+                               std::string_view start_key)
+{
+  start_off = 0;
+
+  if (!hash_hdr) return false;
+  const uint64_t hash_bytes =
+      sizeof(HashIndexHeader) + hash_hdr->table_size * sizeof(HashIndexEntry);
+  const uint64_t sparse_pos = f.index_offset + hash_bytes;
+
+  // Try read sparse header
+  if (::lseek(fd, (off_t)sparse_pos, SEEK_SET) < 0) return false;
+
+  SparseIndexHeader sh{};
+  ssize_t r = ::read(fd, &sh, sizeof(sh));
+  if (r != (ssize_t)sizeof(sh)) return false;
+  if (sh.magic != kSparseMagic || sh.version != kSparseVersion || sh.count == 0) return false;
+
+  // Linear read sparse entries and pick the greatest key <= start_key
+  uint64_t best_off = 0;
+  std::string best_key;
+
+  for (uint32_t i = 0; i < sh.count; ++i) {
+    uint32_t klen = 0;
+    uint64_t off  = 0;
+    if (::read(fd, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
+    if (::read(fd, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
+
+    std::string k; k.resize(klen);
+    if (klen && ::read(fd, k.data(), klen) != (ssize_t)klen) return false;
+
+    if (start_key.empty() || k <= start_key) {
+      if (best_key.empty() || k > best_key) {
+        best_key.swap(k);
+        best_off = off;
+      }
+    }
+  }
+
+  start_off = best_off;
+  return true;
+}
+
 std::vector<std::pair<std::string, std::string>>
 SstReader::scan(std::string_view start, std::string_view end) {
-  // Linear pass with torn-tail protection & block stepping.
   std::vector<std::pair<std::string,std::string>> out;
-
   if (fd_ < 0) return out;
 
+  // read footer
   off_t endpos = ::lseek(fd_, 0, SEEK_END);
   if (endpos < (off_t)sizeof(SstFooter)) return out;
   if (::lseek(fd_, endpos - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return out;
@@ -134,7 +188,13 @@ SstReader::scan(std::string_view start, std::string_view end) {
   SstFooter f{};
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return out;
 
+  // try to leverage sparse index to jump close to 'start'
   uint64_t off = 0;
+  const HashIndexHeader* hash_hdr = nullptr;
+  if (index_.good()) hash_hdr = reinterpret_cast<const HashIndexHeader*>(
+                                  reinterpret_cast<const char*>(index_.table()) - sizeof(HashIndexHeader));
+  (void)load_sparse_anchor(fd_, f, hash_hdr, off, start);
+
   while (off < f.index_offset) {
     SstRecordMeta m{}; std::string k; std::string v;
     if (!read_record_at(off, m, k, v)) break; // stop on torn tail
@@ -142,13 +202,12 @@ SstReader::scan(std::string_view start, std::string_view end) {
     const uint64_t padded = (used + (SST_BLOCK_SIZE - 1)) & ~(SST_BLOCK_SIZE - 1);
     off += padded;
 
-    if ((!start.empty() && k < start) || (!end.empty() && k > end)) {
-      if (!end.empty() && k > end) break;
-      continue;
-    }
+    if ((!start.empty() && k < start)) continue;
+    if ((!end.empty()   && k > end))   break;
+
     if (m.flags == SST_FLAG_PUT) out.emplace_back(std::move(k), std::move(v));
   }
-  std::sort(out.begin(), out.end(), [](auto& a, auto& b){ return a.first < b.first; });
+  // records already arrive in order; sort is not necessary here
   return out;
 }
 

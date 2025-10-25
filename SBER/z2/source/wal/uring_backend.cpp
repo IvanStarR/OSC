@@ -1,3 +1,4 @@
+// source/wal/uring_backend.cpp
 #include "wal/uring_backend.hpp"
 #include <unistd.h>
 #include <cerrno>
@@ -9,6 +10,7 @@
 #  endif
 #endif
 #include <spdlog/spdlog.h>
+#include <cstdlib>
 
 namespace uringkv {
 
@@ -25,6 +27,11 @@ struct UringBackend::Impl {
   bool files_registered = false;
   int  registered_fd    = -1;
 
+  // fixed buffers (optional; we register a single 1MiB buffer)
+  bool buffers_registered = false;
+  void* buf_mem = nullptr;
+  size_t buf_len = 1u << 20; // 1 MiB
+
   explicit Impl(unsigned qd, bool sqpoll) {
     unsigned flags = 0;
 #ifdef IORING_SETUP_SQPOLL
@@ -34,9 +41,35 @@ struct UringBackend::Impl {
     if (ok && (flags & IORING_SETUP_SQPOLL)) {
       spdlog::info("io_uring: SQPOLL enabled");
     }
+    // Try register one contiguous buffer for write/read-fixed paths.
+    if (ok) {
+      const size_t align = 4096;
+      void* p = nullptr;
+      if (posix_memalign(&p, align, buf_len) == 0 && p) {
+        struct iovec iov{};
+        iov.iov_base = p;
+        iov.iov_len  = buf_len;
+        if (io_uring_register_buffers(&ring, &iov, 1) == 0) {
+          buffers_registered = true;
+          buf_mem = p;
+          spdlog::info("io_uring: registered fixed buffer ({} bytes)", buf_len);
+        } else {
+          free(p);
+          spdlog::warn("io_uring: failed to register buffers; continue without fixed buffers");
+        }
+      }
+    }
   }
   ~Impl() {
-    if (ok) io_uring_queue_exit(&ring);
+    if (ok) {
+      if (buffers_registered) {
+        (void)io_uring_unregister_buffers(&ring);
+        free(buf_mem);
+        buf_mem = nullptr;
+        buffers_registered = false;
+      }
+      io_uring_queue_exit(&ring);
+    }
   }
 
   bool ensure_fixed_file(int fd) {
@@ -86,6 +119,8 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
 #if URKV_HAVE_URING
   if (!p_ || !p_->ok) return false;
 
+  // We still use WRITEV path for correctness (offset handling left to the file mode).
+  // Fixed file is ensured; fixed buffer is registered and may be used in future optimization.
   if (!p_->ensure_fixed_file(fd)) {
     io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
     if (!sqe) return false;

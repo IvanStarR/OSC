@@ -56,9 +56,18 @@ static inline uint64_t roundup_4k(uint64_t n) {
   return rem ? (n + (SST_BLOCK_SIZE - rem)) : n;
 }
 
+// ---- Sparse index on-disk structures (ordered, for fast scan) ----
+struct SparseIndexHeader {
+  uint32_t magic;   // 'SIDX' = 0x53494458
+  uint32_t version; // 1
+  uint32_t count;   // number of entries
+};
+static constexpr uint32_t kSparseMagic   = 0x53494458u; // 'SIDX'
+static constexpr uint32_t kSparseVersion = 1u;
+
 bool SstWriter::write_sorted(
     const std::vector<std::pair<std::string, std::optional<std::string>>>& entries,
-    uint32_t /*index_step*/)
+    uint32_t index_step)
 {
   if (fd_ < 0) return false;
 
@@ -70,19 +79,26 @@ bool SstWriter::write_sorted(
       }
     }
   }
+  if (index_step == 0) index_step = 64;
 
   // ---- write records (data section) ----
   uint64_t file_off = 0;
   std::vector<uint64_t> rec_offsets;
   rec_offsets.reserve(entries.size());
 
-  for (const auto& kv : entries) {
+  // also build sparse samples for fast scan lower_bound
+  std::vector<std::pair<std::string,uint64_t>> sparse;
+  sparse.reserve(entries.size() / index_step + 4);
+
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto& kv = entries[i];
     const std::string& k = kv.first;
     const bool is_put = kv.second.has_value();
     const std::string_view v = is_put ? std::string_view(*kv.second) : std::string_view();
 
     // record start offset for index
     rec_offsets.push_back(file_off);
+    if (i % index_step == 0) sparse.emplace_back(k, file_off);
 
     const uint64_t h = xxh64_concat(k, v);
 
@@ -129,7 +145,6 @@ bool SstWriter::write_sorted(
     const uint64_t padded = roundup_4k(used);
     uint64_t pad = padded - used;
     if (pad) {
-      // write zeros
       static const char zeros[4096] = {0};
       while (pad > 0) {
         const size_t chunk = static_cast<size_t>(std::min<uint64_t>(pad, sizeof(zeros)));
@@ -139,6 +154,11 @@ bool SstWriter::write_sorted(
       }
     }
     file_off += padded;
+  }
+
+  // ensure last key is included for sparse tail anchor
+  if (!entries.empty() && (sparse.empty() || sparse.back().first != entries.back().first)) {
+    sparse.emplace_back(entries.back().first, rec_offsets.back());
   }
 
   // ---- build mmap-able hash index in memory ----
@@ -164,7 +184,7 @@ bool SstWriter::write_sorted(
     }
   }
 
-  // ---- write index block ----
+  // ---- write hash index block ----
   const uint64_t index_offset = file_off;
 
   HashIndexHeader hdr{};
@@ -173,7 +193,6 @@ bool SstWriter::write_sorted(
   hdr.table_size = table_size;
   hdr.num_items  = items;
 
-  // header
   {
     ssize_t w = ::write(fd_, &hdr, sizeof(hdr));
     if (w != (ssize_t)sizeof(hdr)) {
@@ -182,7 +201,6 @@ bool SstWriter::write_sorted(
     }
     file_off += static_cast<uint64_t>(w);
   }
-  // table
   {
     const char* ptr = reinterpret_cast<const char*>(table.data());
     size_t left = table.size() * sizeof(HashIndexEntry);
@@ -198,9 +216,29 @@ bool SstWriter::write_sorted(
     }
   }
 
+  // ---- write sparse index block (ordered keys every index_step) ----
+  {
+    SparseIndexHeader sh{};
+    sh.magic   = kSparseMagic;
+    sh.version = kSparseVersion;
+    sh.count   = static_cast<uint32_t>(sparse.size());
+
+    if (::write(fd_, &sh, sizeof(sh)) != (ssize_t)sizeof(sh)) {
+      spdlog::error("SST sparse index header write failed");
+      return false;
+    }
+    for (auto& e : sparse) {
+      uint32_t klen = static_cast<uint32_t>(e.first.size());
+      uint64_t off  = e.second;
+      if (::write(fd_, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
+      if (::write(fd_, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
+      if (klen && ::write(fd_, e.first.data(), klen) != (ssize_t)klen) return false;
+    }
+  }
+
   // ---- write footer ----
   SstFooter f{};
-  f.index_offset = index_offset;
+  f.index_offset = index_offset;                 // points to hash-index header
   f.index_count  = static_cast<uint32_t>(table_size); // table_size by contract
   f.version      = kSstVersion;
   std::memset(f.magic, 0, sizeof(f.magic));
