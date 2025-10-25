@@ -4,6 +4,12 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <system_error>
+#include <cstring>
+#include <array>
+
+#include <unistd.h>   // mkdtemp
+#include <stdlib.h>   // mkdtemp
 
 #include "kv.hpp"
 #include "sst/manifest.hpp" // list_sst_sorted
@@ -11,12 +17,18 @@
 using namespace uringkv;
 namespace fs = std::filesystem;
 
+// Создание временного каталога (Linux): mkdtemp безопасно подставит уникальный суффикс
 static std::string make_tmp_dir() {
-  auto base = fs::temp_directory_path() / fs::path("uringkv_smoke_");
-  // unique_path добавит случайный суффикс
-  auto dir = base.string() + fs::unique_path().string();
-  fs::create_directories(dir);
-  return dir;
+  std::string tmpl = (fs::temp_directory_path() / "uringkv_smoke_XXXXXX").string();
+
+  // mkdtemp требует char* с изменяемой памятью и нулём в конце
+  std::vector<char> buf(tmpl.begin(), tmpl.end());
+  buf.push_back('\0');
+
+  char* res = ::mkdtemp(buf.data());
+  REQUIRE(res != nullptr); // если не удалось — тест падает с сообщением от Catch2
+
+  return std::string(res);
 }
 
 TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]") {
@@ -24,7 +36,7 @@ TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]
   const std::string wal = (fs::path(root) / "wal").string();
   const std::string sst = (fs::path(root) / "sst").string();
 
-  // Настроим низкий порог flush, чтобы легче триггерить запись SST
+  // Низкий порог flush, чтобы легко получить SST
   KVOptions opts;
   opts.path                       = root;
   opts.use_uring                 = false; // smoke не зависит от uring
@@ -67,15 +79,12 @@ TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]
     // scan
     auto items = kv.scan("a", "z");
     REQUIRE(items.size() >= 3);
-    // проверим, что "a","b","c" присутствуют и отсортированы
     bool has_a=false, has_b=false, has_c=false;
-    std::string prev;
     for (size_t i=0;i<items.size();++i) {
-      if (i>0) REQUIRE(items[i-1].key <= items[i].key);
+      if (i>0) REQUIRE(items[i-1].key <= items[i].key); // отсортировано
       if (items[i].key == "a" && items[i].value == "1") has_a = true;
       if (items[i].key == "b" && items[i].value == "2") has_b = true;
       if (items[i].key == "c" && items[i].value == "3") has_c = true;
-      prev = items[i].key;
     }
     REQUIRE(has_a);
     REQUIRE(has_b);
@@ -110,20 +119,19 @@ TEST_CASE("uringkv smoke: init, put/get/del/scan, persistence & flush", "[smoke]
   {
     KV kv(opts);
     REQUIRE(kv.init_storage_layout());
-    // добавим данных побольше порога
     for (int i=0;i<200;++i) {
       REQUIRE(kv.put("k" + std::to_string(i), std::string(64, 'x'))); // ~13kB всего
     }
-    // после разрушения kv финальный flush выполнится (final_flush_on_close=true по умолчанию)
+    // при разрушении kv произойдёт финальный flush (final_flush_on_close = true)
   }
 
-  // Проверим, что в каталоге sst появились файлы *.sst
+  // Проверим, что появились файлы *.sst
   {
     auto names = list_sst_sorted(sst);
-    // list_sst_sorted возвращает имена файлов, а не полные пути
     REQUIRE(names.size() >= 1);
   }
 
   // cleanup
-  fs::remove_all(root);
+  std::error_code ec;
+  fs::remove_all(root, ec); // на CI не валим тест, если не получилось удалить
 }
