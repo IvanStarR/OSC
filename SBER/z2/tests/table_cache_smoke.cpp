@@ -11,6 +11,7 @@
 #include "sst/table.hpp"
 
 #include <filesystem>
+#include <unistd.h>
 
 using namespace uringkv;
 
@@ -24,14 +25,16 @@ static std::string tmpdir(const char* prefix){
 TEST_CASE("TableCache: hits grow on repeated access") {
   auto dir = tmpdir("uringkv_cache_");
 
-  // создадим пару записей, чтобы получить SST
+  // создаём SST с данными
   {
     KV kv({.path=dir, .sst_flush_threshold_bytes=1024});
     REQUIRE(kv.init_storage_layout());
-    for (int i=0;i<50;++i) kv.put("k"+std::to_string(i), "v"+std::to_string(i));
+    for (int i=0;i<50;++i) {
+      REQUIRE(kv.put("k"+std::to_string(i), "v"+std::to_string(i)));
+    }
   }
 
-  // найдём самый новый sst
+  // найти любой sst (последний)
   std::filesystem::path sst_dir = std::filesystem::path(dir)/"sst";
   std::string sst_path;
   for (auto& e : std::filesystem::directory_iterator(sst_dir)) {
@@ -42,10 +45,21 @@ TEST_CASE("TableCache: hits grow on repeated access") {
   REQUIRE_FALSE(sst_path.empty());
 
   TableCache cache(2);
+
   auto t1 = cache.get_table(sst_path);
-  REQUIRE(t1 && t1->good());
+  REQUIRE(t1 != nullptr);
+  REQUIRE(t1->good());
+
+  auto before_hits  = cache.hits();
+  auto before_miss  = cache.misses();
+  auto before_open  = cache.opens();
+
   auto t2 = cache.get_table(sst_path);
-  REQUIRE(t2 && t2->good());
-  REQUIRE(cache.hits() >= 1);
-  REQUIRE(cache.opens() == 1);
+  REQUIRE(t2 != nullptr);
+  REQUIRE(t2->good());
+
+  // на второй запрос должен быть hit, без повторного открытия
+  REQUIRE(cache.hits() >= before_hits + 1);
+  REQUIRE(cache.opens() == before_open);     // не должно расти
+  REQUIRE(cache.misses() == before_miss);    // и промахов не добавилось
 }
