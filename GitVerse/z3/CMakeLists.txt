@@ -163,7 +163,6 @@ if(URINGKV_ENABLE_TESTS)
     FetchContent_Declare(
         catch2
         URL https://github.com/catchorg/Catch2/archive/refs/tags/${VER_CATCH2}.tar.gz
-        # URL_HASH SHA256=<add-sha256-here-if-needed>
     )
     FetchContent_MakeAvailable(catch2)
 endif()
