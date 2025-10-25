@@ -23,9 +23,6 @@ FetchContent_MakeAvailable(spdlog)
 # ---------- системные tinyxml2 + libsolv ----------
 find_package(TinyXML2 REQUIRED)
 
-# через pkg-config — самый надёжный способ для libsolv
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBSOLV REQUIRED IMPORTED_TARGET libsolv libsolvext)
 
 # ---------- ваш таргет ----------
 add_executable(rpm_graph_fast
