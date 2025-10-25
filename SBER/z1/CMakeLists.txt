@@ -4,9 +4,6 @@ project(rpm_graph_fast LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# -----------------------------
-# fmt + spdlog (FetchContent)
-# -----------------------------
 include(FetchContent)
 
 FetchContent_Declare(fmt
@@ -22,10 +19,6 @@ FetchContent_Declare(spdlog
 )
 FetchContent_MakeAvailable(spdlog)
 
-# -----------------------------
-# tinyxml2: ручной импорт системной библиотеки
-# (можно переопределить путями: -DTINYXML2_INCLUDE_DIR=... -DTINYXML2_LIBRARY=...)
-# -----------------------------
 if (NOT DEFINED TINYXML2_INCLUDE_DIR)
   find_path(TINYXML2_INCLUDE_DIR
     NAMES tinyxml2.h
@@ -54,10 +47,6 @@ set_target_properties(TinyXML2::TinyXML2 PROPERTIES
 )
 message(STATUS "Using system tinyxml2: inc=${TINYXML2_INCLUDE_DIR}, lib=${TINYXML2_LIBRARY}")
 
-# -----------------------------
-# libsolv + libsolvext: ручной импорт
-# (можно переопределить: -DLIBSOLV_INCLUDE_DIR=... -DLIBSOLV_LIBRARY=... -DLIBSOLVEXT_LIBRARY=...)
-# -----------------------------
 if (NOT DEFINED LIBSOLV_INCLUDE_DIR)
   find_path(LIBSOLV_INCLUDE_DIR
     NAMES solv/pool.h
@@ -90,18 +79,15 @@ target_include_directories(LIBSOLV::libsolv INTERFACE "${LIBSOLV_INCLUDE_DIR}")
 target_link_libraries(LIBSOLV::libsolv INTERFACE "${LIBSOLV_LIBRARY}" "${LIBSOLVEXT_LIBRARY}")
 message(STATUS "Using system libsolv: inc=${LIBSOLV_INCLUDE_DIR}, lib=${LIBSOLV_LIBRARY}, libext=${LIBSOLVEXT_LIBRARY}")
 
-# -----------------------------
-# Исполняемый файл проекта
-# -----------------------------
 add_executable(rpm_graph_fast
   src/main.cpp
   src/exec.cpp
   src/thread_pool.cpp
   src/cache.cpp
-  src/repoquery.cpp          # оставь/убери по необходимости
+  src/repoquery.cpp        
   src/graph.cpp
   src/json_writer.cpp
-  src/solv_backend.cpp       # libsolv backend
+  src/solv_backend.cpp       
 )
 target_include_directories(rpm_graph_fast PRIVATE include)
 
@@ -113,7 +99,6 @@ target_link_libraries(rpm_graph_fast
     LIBSOLV::libsolv
 )
 
-# приглушить логи в Release
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
   target_compile_definitions(rpm_graph_fast PRIVATE SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO)
 endif()

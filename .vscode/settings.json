@@ -72,6 +72,10 @@
         "cinttypes": "cpp",
         "typeindex": "cpp",
         "typeinfo": "cpp",
-        "variant": "cpp"
+        "variant": "cpp",
+        "bitset": "cpp",
+        "cfenv": "cpp",
+        "regex": "cpp",
+        "stdfloat": "cpp"
     }
 }

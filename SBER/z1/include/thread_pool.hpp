@@ -1,4 +1,3 @@
-// thread_pool.hpp
 #pragma once
 #include <atomic>
 #include <condition_variable>
@@ -18,5 +17,5 @@ class ThreadPool {
     explicit ThreadPool(unsigned n);
     ~ThreadPool();
     void submit(std::function<void()> fn);
-    void wait_empty();// дождаться опустошения очереди
+    void wait_empty();
 };

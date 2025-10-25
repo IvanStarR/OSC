@@ -1,4 +1,3 @@
-// json_writer.hpp
 #pragma once
 #include <string>
 #include "graph.hpp"

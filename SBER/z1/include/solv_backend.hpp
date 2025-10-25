@@ -10,10 +10,10 @@ struct SolvStats {
     size_t build_edges {0};
 };
 
-bool build_graphs_with_libsolv(const std::string& repoids_csv,// "" = все из /var/cache/dnf
-                               const std::string& archs_csv,  // "x86_64,noarch" и т.п.
+bool build_graphs_with_libsolv(const std::string& repoids_csv,
+                               const std::string& archs_csv,  
                                Graph& runtime,
                                Graph& build,
                                SolvStats& stats,
-                               int threads// 0=авто
+                               int threads
 );
