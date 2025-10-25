@@ -6,8 +6,8 @@
 #  endif
 #endif
 
-#include "uringkv/kv.hpp"
-#include "uringkv/util.hpp"
+#include "kv.hpp"
+#include "util.hpp"
 #include <filesystem>
 #include <fstream>
 #include <vector>
