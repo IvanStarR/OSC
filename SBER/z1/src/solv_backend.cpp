@@ -7,10 +7,8 @@
 #include <atomic>
 #include <cctype>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <regex>
-#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -27,11 +25,10 @@ extern "C" {
 #include <solv/util.h>
 }
 
-// -------------------------------------------------------------
-
 using std::string;
 using std::vector;
 
+// ---------- utils ----------
 static string join_path(const string& a, const string& b) {
   if (a.empty()) return b;
   if (a.back() == '/') return a + b;
@@ -40,7 +37,7 @@ static string join_path(const string& a, const string& b) {
 
 static void split_csv(const string& s, vector<string>& out) {
   out.clear();
-  std::string cur;
+  string cur;
   for (char c : s) {
     if (c == ',' || isspace((unsigned char)c)) {
       if (!cur.empty()) { out.push_back(cur); cur.clear(); }
@@ -53,7 +50,7 @@ static vector<string> list_all_repoids_from_cache() {
   vector<string> out;
   const string base = "/var/cache/dnf";
   if (!std::filesystem::exists(base)) return out;
-  std::regex re("^(.*)-[0-9a-f]{10,}$"); // repoid-<hash>
+  std::regex re("^(.*)-[0-9a-f]{10,}$"); // "repoid-<hash>"
   for (auto& it : std::filesystem::directory_iterator(base)) {
     if (!it.is_directory()) continue;
     std::smatch m;
@@ -81,13 +78,22 @@ static vector<string> find_repodata_dirs(const string& repoid) {
   return out;
 }
 
+// ---------- repomd parsing ----------
 struct RpmmdPaths { string primary, filelists, other; };
+
+static string normalize_href(string href) {
+  // отрезаем "./" и ведущий "repodata/" — т.к. базой у нас уже каталог .../repodata
+  while (href.rfind("./", 0) == 0) href.erase(0, 2);
+  if (href.rfind("repodata/", 0) == 0) href.erase(0, 9);
+  return href;
+}
 
 static bool parse_repomd(const string& repomd, RpmmdPaths& out) {
   tinyxml2::XMLDocument doc;
   if (doc.LoadFile(repomd.c_str()) != tinyxml2::XML_SUCCESS) return false;
   auto* root = doc.RootElement();
   if (!root) return false;
+
   for (auto* data = root->FirstChildElement("data"); data; data = data->NextSiblingElement("data")) {
     const char* type = data->Attribute("type");
     if (!type) continue;
@@ -95,23 +101,23 @@ static bool parse_repomd(const string& repomd, RpmmdPaths& out) {
     if (!loc) continue;
     const char* href = loc->Attribute("href");
     if (!href) continue;
-    string t(type), h(href);
-    if (t == "primary")      out.primary   = h;
+    string t(type), h = normalize_href(href);
+    if      (t == "primary")   out.primary   = h;
     else if (t == "filelists") out.filelists = h;
     else if (t == "other")     out.other     = h;
   }
   return !out.primary.empty();
 }
 
-// ---------- чтение .xml/.gz/.xz и .zst (через zstd -dc) ----------
+// ---------- read xml/.gz/.xz/.zst ----------
 struct XFile { FILE* fp{nullptr}; bool is_pipe{false}; };
 
-static XFile xfopen_any(const std::string& path) {
+static XFile xfopen_any(const string& path) {
   XFile x;
-  x.fp = solv_xfopen(path.c_str(), "r"); // умеет обычные и сжатые, если собрано в libsolv
+  x.fp = solv_xfopen(path.c_str(), "r");  // умеет .gz/.xz, если включено в libsolv
   if (x.fp) return x;
 
-  // Фолбэк: если .zst — откроем через внешнюю утилиту zstd -dc
+  // fallback для .zst: внешняя утилита
   if (path.size() >= 4 && path.rfind(".zst") == path.size() - 4) {
     std::string cmd = "zstd -dc -- '" + path + "'";
     x.fp = popen(cmd.c_str(), "r");
@@ -122,14 +128,13 @@ static XFile xfopen_any(const std::string& path) {
 
 static void xfclose_any(XFile& x) {
   if (!x.fp) return;
-  if (x.is_pipe) pclose(x.fp);
-  else fclose(x.fp);
+  if (x.is_pipe) pclose(x.fp); else fclose(x.fp);
   x.fp = nullptr;
 }
 
-// Загрузка repodata в Repo (repo_add_rpmmd ожидает FILE*)
-static bool repo_add_from_repodata_dir(Repo* repo, const std::string& dir) {
-  std::string repomd = join_path(dir, "repomd.xml");
+// ---------- add repo from repodata dir ----------
+static bool repo_add_from_repodata_dir(Repo* repo, const string& dir) {
+  string repomd = join_path(dir, "repomd.xml");
   if (!std::filesystem::exists(repomd) && std::filesystem::exists(repomd + ".gz"))
     repomd += ".gz";
 
@@ -138,19 +143,19 @@ static bool repo_add_from_repodata_dir(Repo* repo, const std::string& dir) {
     // fallback: подобрать файлы по маске
     for (auto& it : std::filesystem::directory_iterator(dir)) {
       auto bn = it.path().filename().string();
-      if      (bn.find("primary.xml")    != std::string::npos) p.primary   = bn;
-      else if (bn.find("filelists.xml")  != std::string::npos) p.filelists = bn;
-      else if (bn.find("other.xml")      != std::string::npos) p.other     = bn;
-      else if (bn.find("primary.xml.zst")   != std::string::npos) p.primary   = bn;
-      else if (bn.find("filelists.xml.zst") != std::string::npos) p.filelists = bn;
-      else if (bn.find("other.xml.zst")     != std::string::npos) p.other     = bn;
+      if      (bn.find("primary.xml")    != string::npos) p.primary   = bn;
+      else if (bn.find("filelists.xml")  != string::npos) p.filelists = bn;
+      else if (bn.find("other.xml")      != string::npos) p.other     = bn;
+      else if (bn.find("primary.xml.zst")    != string::npos) p.primary   = bn;
+      else if (bn.find("filelists.xml.zst")  != string::npos) p.filelists = bn;
+      else if (bn.find("other.xml.zst")      != string::npos) p.other     = bn;
     }
     if (p.primary.empty()) return false;
   }
 
-  const std::string primary   = join_path(dir, p.primary);
-  const std::string filelists = p.filelists.empty() ? "" : join_path(dir, p.filelists);
-  const std::string other     = p.other.empty()     ? "" : join_path(dir, p.other);
+  const string primary   = join_path(dir, p.primary);
+  const string filelists = p.filelists.empty() ? "" : join_path(dir, p.filelists);
+  const string other     = p.other.empty()     ? "" : join_path(dir, p.other);
 
   int flags = 0;
 
@@ -175,11 +180,10 @@ static bool repo_add_from_repodata_dir(Repo* repo, const std::string& dir) {
   return true;
 }
 
-// -------------------------------------------------------------
-
+// ---------- main backend ----------
 struct PoolGuard {
   Pool* pool{nullptr};
-  PoolGuard() { pool = pool_create(); }
+  PoolGuard(){ pool = pool_create(); }
   ~PoolGuard(){ if (pool) pool_free(pool); }
 };
 
@@ -189,7 +193,6 @@ struct EdgeHasher {
   }
 };
 
-// Главная функция backend-а
 bool build_graphs_with_libsolv(const string& repoids_csv,
                                const string& archs_csv,
                                Graph& gr_runtime,
@@ -197,35 +200,30 @@ bool build_graphs_with_libsolv(const string& repoids_csv,
                                SolvStats& stats,
                                int threads)
 {
-  // 1) список репо и архов
+  // 1) репозитории и архитектуры
   vector<string> repoids;
   if (repoids_csv.empty()) repoids = list_all_repoids_from_cache();
   else split_csv(repoids_csv, repoids);
-
   if (repoids.empty()) {
     spdlog::warn("No repos found in /var/cache/dnf. Run `sudo dnf makecache`.");
     return false;
   }
 
   std::unordered_set<string> archs;
-  {
-    vector<string> tmp; split_csv(archs_csv, tmp);
-    for (auto& a : tmp) archs.insert(a);
-    archs.insert("noarch");
-  }
+  { vector<string> tmp; split_csv(archs_csv, tmp); for (auto& a: tmp) archs.insert(a); archs.insert("noarch"); }
 
-  // 2) загрузка repodata в pool
+  // 2) загрузка repodata
   PoolGuard pg; Pool* pool = pg.pool;
   size_t repos_loaded = 0;
   for (auto& rid : repoids) {
-    auto repodata_dirs = find_repodata_dirs(rid);
-    for (auto& dir : repodata_dirs) {
-      Repo* r = repo_create(pool, (rid + ":" + dir).c_str());
-      if (repo_add_from_repodata_dir(r, dir)) {
+    auto dirs = find_repodata_dirs(rid);
+    for (auto& d : dirs) {
+      Repo* r = repo_create(pool, (rid + ":" + d).c_str());
+      if (repo_add_from_repodata_dir(r, d)) {
         repo_internalize(r);
         repos_loaded++;
       } else {
-        spdlog::warn("skip repo (bad repodata): {}", dir);
+        spdlog::warn("skip repo (bad repodata): {}", d);
         repo_free(r, 1);
       }
     }
@@ -239,7 +237,7 @@ bool build_graphs_with_libsolv(const string& repoids_csv,
 
   pool_createwhatprovides(pool);
 
-  // 3) собираем интересные solvables
+  // 3) собрать списки solvables
   vector<Id> runtime_ids, build_ids;
   int nsolv = pool->nsolvables;
   for (Id id = 1; id < nsolv; ++id) {
@@ -247,12 +245,12 @@ bool build_graphs_with_libsolv(const string& repoids_csv,
     if (!s || !s->repo) continue;
     const char* arch = pool_id2str(pool, s->arch);
     const char* name = pool_id2str(pool, s->name);
-    bool is_src = (strcmp(arch, "src") == 0) || (strcmp(arch, "nosrc") == 0);
+    bool is_src = (strcmp(arch,"src")==0) || (strcmp(arch,"nosrc")==0);
     if (is_src) {
       build_ids.push_back(id);
       gr_build.add_node(name, "srpm");
     } else {
-      if (archs.count(arch) == 0) continue;
+      if (archs.count(arch)==0) continue;
       runtime_ids.push_back(id);
       gr_runtime.add_node(name, "rpm");
     }
@@ -260,31 +258,29 @@ bool build_graphs_with_libsolv(const string& repoids_csv,
   stats.solvables_seen = runtime_ids.size() + build_ids.size();
   spdlog::info("solvables: runtime={} build={}", runtime_ids.size(), build_ids.size());
 
-  // 4) параллельная обработка requires -> providers
-  std::mutex pool_mx; // доступ к pool под мьютексом
+  // 4) параллельная обработка зависимостей
+  std::mutex pool_mx; // libsolv-пул под мьютексом
   std::unordered_set<std::pair<string,string>, EdgeHasher> seen_rt, seen_bd;
   std::mutex rt_mx, bd_mx;
 
   auto worker_runtime = [&](Id id){
     Solvable* s; { std::lock_guard<std::mutex> lk(pool_mx); s = pool->solvables + id; }
     const char* srcname = pool_id2str(pool, s->name);
-
     Queue req; queue_init(&req);
     { std::lock_guard<std::mutex> lk(pool_mx); solvable_lookup_deparray(s, SOLVABLE_REQUIRES, &req, -1); }
-
-    for (int i=0; i<req.count; ++i) {
-      Id dep = req.elements[i];
-      Id* wp; { std::lock_guard<std::mutex> lk(pool_mx); wp = pool_whatprovides_ptr(pool, dep); }
-      if (!wp) continue;
-      for (Id* p = wp; *p; ++p) {
+    for (int i=0;i<req.count;++i){
+      Id dep=req.elements[i]; Id* wp;
+      { std::lock_guard<std::mutex> lk(pool_mx); wp = pool_whatprovides_ptr(pool, dep); }
+      if(!wp) continue;
+      for(Id* p=wp; *p; ++p){
         Solvable* ps; { std::lock_guard<std::mutex> lk(pool_mx); ps = pool->solvables + *p; }
-        if (!ps || !ps->repo) continue;
+        if(!ps || !ps->repo) continue;
         const char* parch = pool_id2str(pool, ps->arch);
-        if (archs.count(parch) == 0) continue;
+        if(archs.count(parch)==0) continue;
         const char* dstname = pool_id2str(pool, ps->name);
         { std::lock_guard<std::mutex> lk(rt_mx);
           auto ins = seen_rt.emplace(srcname, dstname);
-          if (ins.second) { gr_runtime.add_node(dstname, "rpm"); gr_runtime.add_edge(srcname, dstname); }
+          if(ins.second){ gr_runtime.add_node(dstname,"rpm"); gr_runtime.add_edge(srcname,dstname); }
         }
       }
     }
@@ -294,48 +290,36 @@ bool build_graphs_with_libsolv(const string& repoids_csv,
   auto worker_build = [&](Id id){
     Solvable* s; { std::lock_guard<std::mutex> lk(pool_mx); s = pool->solvables + id; }
     const char* srcname = pool_id2str(pool, s->name);
-
     Queue req; queue_init(&req);
     { std::lock_guard<std::mutex> lk(pool_mx); solvable_lookup_deparray(s, SOLVABLE_REQUIRES, &req, -1); }
-
-    for (int i=0; i<req.count; ++i) {
-      Id dep = req.elements[i];
-      Id* wp; { std::lock_guard<std::mutex> lk(pool_mx); wp = pool_whatprovides_ptr(pool, dep); }
-      if (!wp) continue;
-      for (Id* p = wp; *p; ++p) {
+    for (int i=0;i<req.count;++i){
+      Id dep=req.elements[i]; Id* wp;
+      { std::lock_guard<std::mutex> lk(pool_mx); wp = pool_whatprovides_ptr(pool, dep); }
+      if(!wp) continue;
+      for(Id* p=wp; *p; ++p){
         Solvable* ps; { std::lock_guard<std::mutex> lk(pool_mx); ps = pool->solvables + *p; }
-        if (!ps || !ps->repo) continue;
+        if(!ps || !ps->repo) continue;
         const char* dstname = pool_id2str(pool, ps->name);
         { std::lock_guard<std::mutex> lk(bd_mx);
           auto ins = seen_bd.emplace(srcname, dstname);
-          if (ins.second) { gr_build.add_node(dstname, "rpm"); gr_build.add_edge(srcname, dstname); }
+          if(ins.second){ gr_build.add_node(dstname,"rpm"); gr_build.add_edge(srcname,dstname); }
         }
       }
     }
     queue_free(&req);
   };
 
-  unsigned nthreads = threads > 0 ? (unsigned)threads : std::max(1u, std::thread::hardware_concurrency());
+  unsigned nthreads = threads>0 ? (unsigned)threads : std::max(1u, std::thread::hardware_concurrency());
 
-  ThreadPool pool_rt(nthreads);
-  std::atomic<size_t> done_rt{0};
+  ThreadPool pool_rt(nthreads); std::atomic<size_t> done_rt{0};
   for (auto id : runtime_ids) {
-    pool_rt.submit([&, id]{
-      worker_runtime(id);
-      size_t d = ++done_rt;
-      if ((d % 2000) == 0) spdlog::info("libsolv runtime progress: {}/{}", d, runtime_ids.size());
-    });
+    pool_rt.submit([&, id]{ worker_runtime(id); size_t d=++done_rt; if((d%2000)==0) spdlog::info("libsolv runtime progress: {}/{}", d, runtime_ids.size()); });
   }
   pool_rt.wait_empty();
 
-  ThreadPool pool_bd(nthreads);
-  std::atomic<size_t> done_bd{0};
+  ThreadPool pool_bd(nthreads); std::atomic<size_t> done_bd{0};
   for (auto id : build_ids) {
-    pool_bd.submit([&, id]{
-      worker_build(id);
-      size_t d = ++done_bd;
-      if ((d % 1000) == 0) spdlog::info("libsolv build progress: {}/{}", d, build_ids.size());
-    });
+    pool_bd.submit([&, id]{ worker_build(id); size_t d=++done_bd; if((d%1000)==0) spdlog::info("libsolv build progress: {}/{}", d, build_ids.size()); });
   }
   pool_bd.wait_empty();
 
