@@ -19,7 +19,9 @@ public:
   SstTable(const SstTable&) = delete;
   SstTable& operator=(const SstTable&) = delete;
 
-  bool good() const { return fd_ >= 0 && index_.good(); }
+  // Таблица считается "годной", если файл открыт.
+  // Наличие mmap-хеш-индекса НЕ обязательно: get() умеет работать без него.
+  bool good() const { return fd_ >= 0; }
   const std::string& path() const { return path_; }
 
   // Возвращает {flag, value} или nullopt (ключ не найден / tombstone).
@@ -31,7 +33,7 @@ private:
 
   std::string path_;
   int fd_ = -1;
-  MmapHashIndex index_;
+  MmapHashIndex index_;  // опционально используется для ускорения get()
 };
 
 } // namespace uringkv

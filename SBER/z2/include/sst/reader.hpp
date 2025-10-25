@@ -13,7 +13,8 @@ public:
   explicit SstReader(const std::string& path);
   ~SstReader();
 
-  bool good() const { return fd_ >= 0 && index_.good(); }
+  // Достаточно того, что файл открыт. Индекс может отсутствовать.
+  bool good() const { return fd_ >= 0; }
 
   std::optional<std::pair<uint32_t, std::string>> get(std::string_view key);
   std::vector<std::pair<std::string,std::string>> scan(std::string_view start, std::string_view end);
@@ -24,7 +25,7 @@ private:
 
   std::string path_;
   int fd_ = -1;
-  MmapHashIndex index_;
+  MmapHashIndex index_;  // если не замапился — сканируем без него
 };
 
 } // namespace uringkv
