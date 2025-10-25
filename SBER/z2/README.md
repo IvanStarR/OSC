@@ -21,6 +21,8 @@ Directory layout
 - tests/          Catch2 unit tests
 - CMakeLists.txt  top-level
 
+sudo dnf -y install cmake git pkgconf-pkg-config liburing-devel
+
 Build (Debug)
   mkdir -p build
   cd build
@@ -42,6 +44,8 @@ Quick start (from build dir)
   ./bin/uringkv --path /tmp/uringkv_demo scan --start a --end z
   ./bin/uringkv --path /tmp/uringkv_demo metrics
   ./bin/uringkv --path /tmp/uringkv_demo metrics --watch 2
+
+
 
 io_uring fast path (if liburing is installed)
   # enable io_uring with queue depth 256
