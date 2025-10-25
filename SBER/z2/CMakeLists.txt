@@ -165,8 +165,7 @@ else()
   set(XXHASH_TARGET xxhash_external)
 endif()
 
-
-set(URING_GIT_TAG "liburing-2.6" CACHE STRING "liburing tag")
+set(URING_GIT_TAG "liburing-2.5" CACHE STRING "liburing tag")
 FetchContent_Declare(
   liburing
   GIT_REPOSITORY https://github.com/axboe/liburing.git
