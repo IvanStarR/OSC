@@ -1,38 +1,36 @@
-// source/kv.cpp
 #include "kv.hpp"
-#include "cache/table_cache.hpp"
 #include "sst/manifest.hpp"
 #include "sst/reader.hpp"
 #include "sst/writer.hpp"
 #include "util.hpp"
 #include "wal/reader.hpp"
 #include "wal/writer.hpp"
+#include "cache/table_cache.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <dirent.h>
-#include <fcntl.h>
 #include <filesystem>
 #include <mutex>
 #include <spdlog/spdlog.h>
 #include <thread>
-#include <unistd.h>
 #include <unordered_map>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace uringkv {
 
 struct KV::Impl {
-  KVOptions opts;
-  std::string wal_dir;
-  std::string sst_dir;
+  KVOptions    opts;
+  std::string  wal_dir;
+  std::string  sst_dir;
 
-  // WAL (инициализируется в ctor по реальным опциям)
-  WalWriter wal{
-      std::string{},       false, 256, false, 64ull * 1024 * 1024, (1ull << 20),
-      FlushMode::FDATASYNC};
+  // WAL: пустая инициализация; реально пересоздаём по opts
+  WalWriter wal{std::string{}, false, 256, false,
+                64ull * 1024 * 1024, (1ull<<20), FlushMode::FDATASYNC};
 
-  // MemTable: key -> value / tombstone
+  // MemTable
   std::unordered_map<std::string, std::optional<std::string>> mem;
   uint64_t mem_bytes = 0;
 
@@ -44,23 +42,22 @@ struct KV::Impl {
   TableCache tcache{64};
 
   // Фоновая компактация
-  std::thread bg_compactor;
+  std::thread             bg_compactor;
   std::condition_variable cv;
-  bool need_compact = false;
-  bool stopping = false;
+  bool                    need_compact = false;
+  bool                    stopping     = false;
 
-  std::mutex mu;
-  std::atomic<uint64_t> seq{1};
+  std::mutex              mu;
+  std::atomic<uint64_t>   seq{1};
 
   // ---- helpers ----
 
   void purge_wal_files_locked() {
     // удалить все *.wal
-    if (DIR *d = ::opendir(wal_dir.c_str())) {
-      while (auto *e = ::readdir(d)) {
-        const char *name = e->d_name;
-        if (!name || name[0] == '.')
-          continue;
+    if (DIR* d = ::opendir(wal_dir.c_str())) {
+      while (auto* e = ::readdir(d)) {
+        const char* name = e->d_name;
+        if (!name || name[0] == '.') continue;
         std::string n{name};
         if (n.size() == 10 && n.substr(6) == ".wal") {
           ::unlink(join_path(wal_dir, n).c_str());
@@ -70,60 +67,54 @@ struct KV::Impl {
     }
     // fsync каталога wal
     int dfd = ::open(wal_dir.c_str(), O_RDONLY | O_DIRECTORY);
-    if (dfd >= 0) {
-      (void)::fsync(dfd);
-      ::close(dfd);
-    }
+    if (dfd >= 0) { (void)::fsync(dfd); ::close(dfd); }
 
     // открыть новый WAL с актуальными опциями
-    wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
-                    opts.uring_sqpoll, opts.wal_max_segment_bytes,
-                    opts.wal_group_commit_bytes, opts.flush_mode);
+    wal = WalWriter(wal_dir,
+                    opts.use_uring,
+                    opts.uring_queue_depth,
+                    opts.uring_sqpoll,
+                    opts.wal_max_segment_bytes,
+                    opts.wal_group_commit_bytes,
+                    opts.flush_mode);
   }
 
-  // Одна итерация L0-компактации (без захвата mu внутри потенциально длительной
-  // работы)
+  // Одна итерация L0-компактации
   bool compact_l0_once() {
     // Шаг 1: снимок входа под локом
     std::vector<std::string> input;
     uint64_t new_idx = 0;
     {
       std::unique_lock<std::mutex> lk(mu);
-      if (stopping)
-        return true;
-      if (ssts.size() < opts.l0_compact_threshold)
-        return true;
-      input = ssts;
+      if (stopping) return true;
+      if (ssts.size() < opts.l0_compact_threshold) return true;
+      input   = ssts;
       new_idx = next_sst_index + 1;
-      next_sst_index = new_idx; // бронируем имя будущего выхода
+      next_sst_index = new_idx; // бронируем имя
     }
 
     spdlog::info("BG-Compaction: merging {} SST files", input.size());
 
-    // Шаг 2: строим финальный view (вне лока): «новее» перекрывает «старее».
+    // Шаг 2: финальный view
     std::unordered_map<std::string, std::optional<std::string>> view;
     view.reserve(1024);
 
     for (auto it = input.rbegin(); it != input.rend(); ++it) {
       SstReader r(*it);
-      if (!r.good())
-        continue;
+      if (!r.good()) continue;
       auto items = r.scan(std::string_view{}, std::string_view{});
-      for (auto &kv : items) {
-        // если ключ уже встречался (из более нового файла) — пропускаем
-        if (view.find(kv.first) != view.end())
-          continue;
+      for (auto& kv : items) {
+        if (view.find(kv.first) != view.end()) continue;
         view.emplace(kv.first, kv.second);
       }
     }
 
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(view.size());
-    for (auto &[k, v] : view)
-      if (v.has_value())
-        entries.emplace_back(k, v);
+    for (auto& [k, v] : view)
+      if (v.has_value()) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
+              [](const auto& a, const auto& b){ return a.first < b.first; });
 
     // Шаг 3: пишем новый SST
     const auto out_name = sst_name(new_idx);
@@ -135,15 +126,14 @@ struct KV::Impl {
       return false;
     }
 
-    // Шаг 4: коммит под локом, удаляем старые, сбрасываем кэш
+    // Шаг 4: коммит под локом
     {
       std::unique_lock<std::mutex> lk(mu);
-      if (stopping)
-        return true;
+      if (stopping) return true;
 
       std::vector<std::string> new_list;
-      new_list.reserve(ssts.size() + 1);
-      for (auto &p : ssts) {
+      new_list.reserve(ssts.size()+1);
+      for (auto& p : ssts) {
         if (std::find(input.begin(), input.end(), p) == input.end())
           new_list.push_back(p);
       }
@@ -153,12 +143,9 @@ struct KV::Impl {
       if (!write_current_atomic(sst_dir, new_idx)) {
         spdlog::warn("BG-Compaction: failed CURRENT -> {}", new_idx);
       }
-      for (const auto &p : input) {
-        (void)::unlink(p.c_str());
-      }
+      for (const auto& p : input) { (void)::unlink(p.c_str()); }
 
-      tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity
-                                                    : 64);
+      tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
     }
 
     spdlog::info("BG-Compaction: done -> {}", out_path);
@@ -167,7 +154,6 @@ struct KV::Impl {
 
   void maybe_schedule_compaction_locked() {
     if (!opts.background_compaction) {
-      // итерация 2: синхронный compact вызывается вне лока по месту, если нужно
       return;
     }
     if (ssts.size() >= opts.l0_compact_threshold) {
@@ -177,19 +163,17 @@ struct KV::Impl {
   }
 
   void maybe_flush_locked() {
-    if (mem_bytes < opts.sst_flush_threshold_bytes)
-      return;
+    if (mem_bytes < opts.sst_flush_threshold_bytes) return;
 
     std::vector<std::pair<std::string, std::optional<std::string>>> entries;
     entries.reserve(mem.size());
-    for (auto &[k, v] : mem)
-      entries.emplace_back(k, v);
+    for (auto& [k,v] : mem) entries.emplace_back(k, v);
     std::sort(entries.begin(), entries.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
+              [](const auto& a, const auto& b){ return a.first < b.first; });
 
-    const uint64_t idx = next_sst_index + 1;
-    const auto name = sst_name(idx);
-    const auto path = join_path(sst_dir, name);
+    const uint64_t idx  = next_sst_index + 1;
+    const auto     name = sst_name(idx);
+    const auto     path = join_path(sst_dir, name);
 
     SstWriter wr(path);
     if (!wr.write_sorted(entries)) {
@@ -215,14 +199,13 @@ struct KV::Impl {
     if (!mem.empty()) {
       std::vector<std::pair<std::string, std::optional<std::string>>> entries;
       entries.reserve(mem.size());
-      for (auto &[k, v] : mem)
-        entries.emplace_back(k, v);
+      for (auto& [k,v] : mem) entries.emplace_back(k, v);
       std::sort(entries.begin(), entries.end(),
-                [](const auto &a, const auto &b) { return a.first < b.first; });
+                [](const auto& a, const auto& b){ return a.first < b.first; });
 
-      const uint64_t idx = next_sst_index + 1;
-      const auto name = sst_name(idx);
-      const auto path = join_path(sst_dir, name);
+      const uint64_t idx  = next_sst_index + 1;
+      const auto     name = sst_name(idx);
+      const auto     path = join_path(sst_dir, name);
 
       SstWriter wr(path);
       if (!wr.write_sorted(entries)) {
@@ -237,8 +220,6 @@ struct KV::Impl {
       }
     }
 
-    // синхронную компактацию НЕ вызываем здесь (делаем только вне лока)
-
     purge_wal_files_locked();
     mem.clear();
     mem_bytes = 0;
@@ -248,11 +229,9 @@ struct KV::Impl {
     std::unique_lock<std::mutex> lk(mu);
     while (true) {
       cv.wait_for(lk, std::chrono::milliseconds(200),
-                  [&] { return stopping || need_compact; });
-      if (stopping)
-        break;
-      if (!need_compact)
-        continue;
+                  [&]{ return stopping || need_compact; });
+      if (stopping) break;
+      if (!need_compact) continue;
       need_compact = false;
 
       lk.unlock();
@@ -261,56 +240,46 @@ struct KV::Impl {
     }
   }
 
-  // Корректно остановить фон, если он есть
   void stop_bg_if_any() {
-    if (!opts.background_compaction)
-      return;
+    if (!opts.background_compaction) return;
     {
       std::lock_guard<std::mutex> lk(mu);
       stopping = true;
       need_compact = false;
     }
     cv.notify_all();
-    if (bg_compactor.joinable())
-      bg_compactor.join();
+    if (bg_compactor.joinable()) bg_compactor.join();
   }
 
   // init
-  Impl(const KVOptions &o) : opts(o) {
+  Impl(const KVOptions& o) : opts(o) {
     wal_dir = join_path(opts.path, "wal");
     sst_dir = join_path(opts.path, "sst");
     ensure_dir(opts.path);
     ensure_dir(wal_dir);
     ensure_dir(sst_dir);
 
-    tcache =
-        TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
+    tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
 
-    // Создаём WAL с учётом opts.flush_mode/use_uring
-    wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
-                    opts.wal_max_segment_bytes, opts.flush_mode);
+    // Создаём WAL по opts
+    wal = WalWriter(wal_dir,
+                    opts.use_uring,
+                    opts.uring_queue_depth,
+                    opts.uring_sqpoll,
+                    opts.wal_max_segment_bytes,
+                    opts.wal_group_commit_bytes,
+                    opts.flush_mode);
 
-    // === Стартовое восстановление SST ===
-    // Сначала читаем CURRENT (если есть) — он источник истины.
-    uint64_t cur_index = 0;
-    const bool have_current = read_current(sst_dir, cur_index);
-
+    // Прочитать SST и вычислить next_sst_index
     ssts.clear();
-    next_sst_index = 0;
-
-    for (auto &name : list_sst_sorted(sst_dir)) {
-      const uint64_t idx = std::stoull(name.substr(0, 6));
-      // Если CURRENT существует — игнорируем «сироты» с индексом > CURRENT
-      if (have_current && idx > cur_index) {
-        spdlog::warn("Ignoring orphan SST {} (> CURRENT {})", name, cur_index);
-        continue;
-      }
+    for (auto& name : list_sst_sorted(sst_dir)) {
       ssts.push_back(join_path(sst_dir, name));
+      const uint64_t idx = std::stoull(name.substr(0, 6));
       next_sst_index = std::max(next_sst_index, idx);
     }
-    if (have_current) {
-      next_sst_index = std::max(next_sst_index, cur_index);
-    }
+    uint64_t cur = 0;
+    if (read_current(sst_dir, cur))
+      next_sst_index = std::max(next_sst_index, cur);
 
     // WAL replay
     WalReader rd(wal_dir);
@@ -331,7 +300,7 @@ struct KV::Impl {
     }
 
     if (opts.background_compaction) {
-      bg_compactor = std::thread([this] { compactor_thread(); });
+      bg_compactor = std::thread([this]{ compactor_thread(); });
     }
   }
 
@@ -340,16 +309,13 @@ struct KV::Impl {
 
 // ===== KV API =====
 
-KV::KV(const KVOptions &opts) : p_(new Impl(opts)) {}
+KV::KV(const KVOptions& opts) : p_(new Impl(opts)) {}
 
 KV::~KV() {
-  if (!p_)
-    return;
+  if (!p_) return;
 
-  // 1) сперва останавливаем фон (чтобы он не конкурировал за mu)
   p_->stop_bg_if_any();
 
-  // 2) финальный flush под локом (опционально)
   {
     std::lock_guard lk(p_->mu);
     if (p_->opts.final_flush_on_close) {
@@ -357,7 +323,6 @@ KV::~KV() {
     }
   }
 
-  // 3) при выключенной фоновой компактации — выполнить один проход уже БЕЗ лока
   if (!p_->opts.background_compaction) {
     (void)p_->compact_l0_once();
   }
@@ -370,20 +335,17 @@ bool KV::init_storage_layout() {
   bool ok = ensure_dir(p_->opts.path) &&
             ensure_dir(join_path(p_->opts.path, "wal")) &&
             ensure_dir(join_path(p_->opts.path, "sst"));
-  if (ok)
-    spdlog::info("Initialized storage layout at {}", p_->opts.path);
+  if (ok) spdlog::info("Initialized storage layout at {}", p_->opts.path);
   return ok;
 }
 
 bool KV::put(std::string_view key, std::string_view value) {
   std::lock_guard lk(p_->mu);
   const uint64_t s = p_->seq.fetch_add(1);
-  if (!p_->wal.append_put(s, key, value))
-    return false;
+  if (!p_->wal.append_put(s, key, value)) return false;
 
-  auto &slot = p_->mem[std::string(key)];
-  if (slot.has_value())
-    p_->mem_bytes -= slot->size();
+  auto& slot = p_->mem[std::string(key)];
+  if (slot.has_value()) p_->mem_bytes -= slot->size();
   slot = std::string(value);
   p_->mem_bytes += key.size() + value.size();
 
@@ -396,20 +358,16 @@ std::optional<std::string> KV::get(std::string_view key) {
 
   auto it = p_->mem.find(std::string(key));
   if (it != p_->mem.end()) {
-    if (!it->second.has_value())
-      return std::nullopt;
+    if (!it->second.has_value()) return std::nullopt;
     return it->second.value();
   }
 
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     auto tbl = p_->tcache.get_table(*itf);
-    if (!tbl)
-      continue;
+    if (!tbl) continue;
     auto st = tbl->get(key);
-    if (!st)
-      continue;
-    if (st->first == SST_FLAG_DEL)
-      return std::nullopt;
+    if (!st) continue;
+    if (st->first == SST_FLAG_DEL) return std::nullopt;
     return st->second;
   }
   return std::nullopt;
@@ -418,12 +376,10 @@ std::optional<std::string> KV::get(std::string_view key) {
 bool KV::del(std::string_view key) {
   std::lock_guard lk(p_->mu);
   const uint64_t s = p_->seq.fetch_add(1);
-  if (!p_->wal.append_del(s, key))
-    return false;
+  if (!p_->wal.append_del(s, key)) return false;
 
-  auto &slot = p_->mem[std::string(key)];
-  if (slot.has_value())
-    p_->mem_bytes -= slot->size();
+  auto& slot = p_->mem[std::string(key)];
+  if (slot.has_value()) p_->mem_bytes -= slot->size();
   slot = std::nullopt;
   p_->mem_bytes += key.size();
 
@@ -435,15 +391,13 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
   std::lock_guard lk(p_->mu);
 
   std::unordered_map<std::string, std::optional<std::string>> view;
-  for (auto &[k, v] : p_->mem)
-    view[k] = v;
+  for (auto& [k, v] : p_->mem) view[k] = v;
 
   for (auto itf = p_->ssts.rbegin(); itf != p_->ssts.rend(); ++itf) {
     SstReader r(*itf);
-    if (!r.good())
-      continue;
+    if (!r.good()) continue;
     auto items = r.scan(start, end);
-    for (auto &kv : items) {
+    for (auto& kv : items) {
       if (view.find(kv.first) == view.end())
         view[kv.first] = kv.second;
     }
@@ -451,14 +405,12 @@ std::vector<RangeItem> KV::scan(std::string_view start, std::string_view end) {
 
   std::vector<RangeItem> out;
   out.reserve(view.size());
-  for (auto &[k, v] : view) {
-    if ((!start.empty() && k < start) || (!end.empty() && k > end))
-      continue;
-    if (v.has_value())
-      out.push_back({k, *v});
+  for (auto& [k, v] : view) {
+    if ((!start.empty() && k < start) || (!end.empty() && k > end)) continue;
+    if (v.has_value()) out.push_back({k, *v});
   }
   std::sort(out.begin(), out.end(),
-            [](const auto &a, const auto &b) { return a.key < b.key; });
+            [](const auto& a, const auto& b){ return a.key < b.key; });
   return out;
 }
 
