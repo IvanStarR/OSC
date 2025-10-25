@@ -166,6 +166,30 @@ else()
 endif()
 
 
+# Версию можно закрепить под ваш образ (стабильно 2.6)
+set(URING_GIT_TAG "liburing-2.6" CACHE STRING "liburing tag")
+FetchContent_Declare(
+  liburing
+  GIT_REPOSITORY https://github.com/axboe/liburing.git
+  GIT_TAG        ${URING_GIT_TAG}
+  # Быстрее: не тянуть лишние тесты/доки
+  SOURCE_SUBDIR  .
+)
+# Некоторые старые версии liburing требуют настроек сборки:
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+# Подтягиваем и добавляем в проект
+FetchContent_MakeAvailable(liburing)
+
+# Определяем целевой таргет библиотеки (в разных версиях он называется по-разному)
+set(URING_TARGET "")
+if (TARGET uring)           # новое имя таргета
+  set(URING_TARGET uring)
+elseif (TARGET liburing)    # альтернативное
+  set(URING_TARGET liburing)
+endif()
+
+
 option(URINGKV_ENABLE_TESTS "Build tests" ON)
 
 if(URINGKV_ENABLE_TESTS)
