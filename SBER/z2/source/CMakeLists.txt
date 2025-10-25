@@ -1,5 +1,4 @@
-module(NAME core TYPE STATIC
-    DEPENDENCIES
-    spdlog::spdlog
-    fmt::fmt
-    xxhash::xxhash)
+set(MODULE_NAME core)
+module(NAME ${MODULE_NAME} TYPE STATIC
+    DEPENDENCIES spdlog::spdlog fmt::fmt ${XXHASH_TARGET}
+    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/include)

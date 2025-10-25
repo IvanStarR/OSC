@@ -134,13 +134,37 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(xxhash)
 
+# --- выбрать корректный таргет для xxhash или собрать фолбэк ---
 if (TARGET xxhash::xxhash)
   set(XXHASH_TARGET xxhash::xxhash)
 elseif (TARGET xxhash)
   set(XXHASH_TARGET xxhash)
 else()
-  message(FATAL_ERROR "xxhash target not found after FetchContent. Expected targets: xxhash::xxhash or xxhash")
+  message(STATUS "xxhash CMake target not provided by upstream; building fallback static library")
+
+  # Определяем, где реально лежит исходник
+  set(XXHASH_SRC "")
+  set(XXHASH_INC "")
+  if (EXISTS "${xxhash_SOURCE_DIR}/lib/xxhash.c")
+    set(XXHASH_SRC "${xxhash_SOURCE_DIR}/lib/xxhash.c")
+    set(XXHASH_INC "${xxhash_SOURCE_DIR}/lib")
+  elseif (EXISTS "${xxhash_SOURCE_DIR}/xxhash.c")
+    set(XXHASH_SRC "${xxhash_SOURCE_DIR}/xxhash.c")
+    set(XXHASH_INC "${xxhash_SOURCE_DIR}")
+  else()
+    message(FATAL_ERROR "Couldn't locate xxhash.c in ${xxhash_SOURCE_DIR} (tried lib/xxhash.c and xxhash.c)")
+  endif()
+
+  add_library(xxhash_external STATIC "${XXHASH_SRC}")
+  target_include_directories(xxhash_external PUBLIC "${XXHASH_INC}")
+  # не применяем clang-tidy/Warnings-as-errors к внешнему коду
+  set_property(TARGET xxhash_external PROPERTY CXX_CLANG_TIDY "")
+  if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(xxhash_external PRIVATE -Wno-error)
+  endif()
+  set(XXHASH_TARGET xxhash_external)
 endif()
+
 
 option(URINGKV_ENABLE_TESTS "Build tests" ON)
 
