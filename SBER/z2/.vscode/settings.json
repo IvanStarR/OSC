@@ -2,6 +2,10 @@
     "files.associations": {
         "cstring": "cpp",
         "filesystem": "cpp",
-        "iosfwd": "cpp"
+        "iosfwd": "cpp",
+        "chrono": "cpp",
+        "span": "cpp",
+        "algorithm": "cpp",
+        "unordered_map": "cpp"
     }
 }

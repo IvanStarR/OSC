@@ -5,10 +5,10 @@
 namespace uringkv {
 
 struct WalSegmentHeader {
-  char     magic[8];     // "URKVWAL"
-  uint32_t version;      // 1
-  uint32_t reserved;     // 0
-  uint64_t start_seqno;  // seqno первой записи в сегменте
+  char     magic[8];   
+  uint32_t version;      
+  uint32_t reserved;     
+  uint64_t start_seqno;  
 };
 
 struct WalSegmentConst {
@@ -17,7 +17,6 @@ struct WalSegmentConst {
   static constexpr size_t   HEADER_SIZE = 4096;
 };
 
-// имя файла сегмента: 000001.wal
 std::string wal_segment_name(uint64_t index);
 
 } // namespace uringkv

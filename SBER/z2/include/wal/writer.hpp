@@ -42,7 +42,7 @@ private:
   std::string path_;
   size_t bytes_since_sync_ = 0;
 
-  UringBackend uring_;        // если не инициализировался — будет пустым
+  UringBackend uring_;       
   bool use_uring_ = false;
 
   uint64_t seg_index_ = 1;
