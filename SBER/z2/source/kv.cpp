@@ -74,7 +74,7 @@ struct KV::Impl {
                     opts.wal_max_segment_bytes, opts.flush_mode);
   }
 
-  // Одна итерация L0-компактации
+  // Одна итерация L0-компактации (без захвата mu внутри потенциально длительной работы)
   bool compact_l0_once() {
     // Шаг 1: снимок входа под локом
     std::vector<std::string> input;
@@ -85,17 +85,19 @@ struct KV::Impl {
       if (ssts.size() < opts.l0_compact_threshold) return true;
       input   = ssts;
       new_idx = next_sst_index + 1;
-      next_sst_index = new_idx; // бронируем имя
+      next_sst_index = new_idx; // бронируем имя будущего выхода
     }
 
     spdlog::info("BG-Compaction: merging {} SST files", input.size());
 
-    // Шаг 2: строим финальный view (вне лока): «новее» перекрывает «старее»
+    // Шаг 2: строим финальный view (вне лока): «новее» перекрывает «старее».
+    // NB: если порядок input возрастанием индексов (старые -> новые),
+    // чтобы приоритет был у НОВЫХ, идём с конца.
     std::unordered_map<std::string, std::optional<std::string>> view;
     view.reserve(1024);
 
-    for (const auto& path : input) {
-      SstReader r(path);
+    for (auto it = input.rbegin(); it != input.rend(); ++it) {
+      SstReader r(*it);
       if (!r.good()) continue;
       auto items = r.scan(std::string_view{}, std::string_view{});
       for (auto& kv : items) {
@@ -150,7 +152,8 @@ struct KV::Impl {
 
   void maybe_schedule_compaction_locked() {
     if (!opts.background_compaction) {
-      (void)compact_l0_once();
+      // В итерации 1 фоновой компактации нет; синхронный компактаут
+      // вызываем явно и только ВНЕ лока (см. деструктор).
       return;
     }
     if (ssts.size() >= opts.l0_compact_threshold) {
@@ -207,21 +210,19 @@ struct KV::Impl {
       SstWriter wr(path);
       if (!wr.write_sorted(entries)) {
         spdlog::error("SST final flush failed: {}", path);
-        return;
+        // даже если не записали SST — ниже всё равно очистим WAL, чтобы не застревать
+      } else {
+        if (!write_current_atomic(sst_dir, idx)) {
+          spdlog::warn("Failed to update CURRENT for SST {}", idx);
+        }
+        next_sst_index = idx;
+        ssts.push_back(path);
+        spdlog::info("Flushed MemTable to {} (final)", path);
       }
-      if (!write_current_atomic(sst_dir, idx)) {
-        spdlog::warn("Failed to update CURRENT for SST {}", idx);
-      }
-      next_sst_index = idx;
-      ssts.push_back(path);
-
-      spdlog::info("Flushed MemTable to {} (final)", path);
     }
 
-    // Синхронная компактация — только если фон выключен
-    if (!opts.background_compaction) {
-      (void)compact_l0_once();
-    }
+    // ВНИМАНИЕ: синхронную компактацию здесь НЕ вызываем.
+    // Это делается уже вне лока (см. деструктор), чтобы не попасть в deadlock.
 
     purge_wal_files_locked();
     mem.clear();
@@ -323,6 +324,11 @@ KV::~KV() {
     if (p_->opts.final_flush_on_close) {
       p_->flush_all_locked();
     }
+  }
+
+  // 3) при выключенной фоновой компактации — выполнить один проход уже БЕЗ лока
+  if (!p_->opts.background_compaction) {
+    (void)p_->compact_l0_once();
   }
 
   delete p_;
