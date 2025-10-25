@@ -165,6 +165,8 @@ else()
   set(XXHASH_TARGET xxhash_external)
 endif()
 
+
+# 1) Стабильный тег; можно поменять на liburing-2.4
 set(URING_GIT_TAG "liburing-2.5" CACHE STRING "liburing tag")
 FetchContent_Declare(
   liburing
@@ -176,11 +178,11 @@ FetchContent_GetProperties(liburing)
 if (NOT liburing_POPULATED)
   FetchContent_Populate(liburing)
 
-  # Если у апстрима есть собственный CMake, подключим его:
+  # 2) Если у апстрима есть CMakeLists.txt — подключаем его
   if (EXISTS "${liburing_SOURCE_DIR}/CMakeLists.txt")
     add_subdirectory(${liburing_SOURCE_DIR} ${liburing_BINARY_DIR}/liburing EXCLUDE_FROM_ALL)
   else()
-    # --- Фолбэк: соберём статическую библиотеку сами ---
+    # 3) Фолбэк: собираем библиотеку вручную
     file(GLOB LIBURING_SOURCES
       "${liburing_SOURCE_DIR}/src/queue.c"
       "${liburing_SOURCE_DIR}/src/register.c"
@@ -189,21 +191,59 @@ if (NOT liburing_POPULATED)
       "${liburing_SOURCE_DIR}/src/version.c"
       "${liburing_SOURCE_DIR}/src/compat.c"
     )
-
     if (LIBURING_SOURCES STREQUAL "")
       message(FATAL_ERROR "liburing fetched, but sources not found under src/*.c")
     endif()
 
     add_library(liburing_external STATIC ${LIBURING_SOURCES})
-   target_include_directories(liburing_external PUBLIC
-  "${liburing_SOURCE_DIR}/src/include"   # <liburing.h>, <liburing/compat.h>
-  "${liburing_SOURCE_DIR}/include"       # на всякий случай (некоторые релизы)
-  "${liburing_SOURCE_DIR}/src"
-)
+
+    # 4) Создадим shim compat.h, если его нет в исходниках
+    set(LIBURING_SHIM_DIR "${CMAKE_BINARY_DIR}/liburing_shim/include")
+    set(LIBURING_SHIM_FILE "${LIBURING_SHIM_DIR}/liburing/compat.h")
+    if (NOT EXISTS "${liburing_SOURCE_DIR}/src/include/liburing/compat.h")
+      file(MAKE_DIRECTORY "${LIBURING_SHIM_DIR}/liburing")
+      file(WRITE "${LIBURING_SHIM_FILE}"
+"// minimal compat shim for manual liburing build
+#pragma once
+#include <unistd.h>
+#include <sys/types.h>
+#ifndef __must_check
+# define __must_check
+#endif
+#ifndef LIBURING_INTERNAL
+# define LIBURING_INTERNAL
+#endif
+")
+    endif()
+
+    # 5) Порядок include ВАЖЕН: shim -> src/include -> include (на всякий случай) -> src
+    target_include_directories(liburing_external PUBLIC
+      "${LIBURING_SHIM_DIR}"
+      "${liburing_SOURCE_DIR}/src/include"
+      "${liburing_SOURCE_DIR}/include"
+      "${liburing_SOURCE_DIR}/src"
+    )
     target_compile_definitions(liburing_external PRIVATE _GNU_SOURCE)
     set_target_properties(liburing_external PROPERTIES POSITION_INDEPENDENT_CODE ON)
   endif()
 endif()
+
+# 6) Выберем имя таргета
+set(URING_TARGET "")
+if (TARGET uring)
+  set(URING_TARGET uring)
+elseif (TARGET liburing)
+  set(URING_TARGET liburing)
+elseif (TARGET liburing_external)
+  set(URING_TARGET liburing_external)
+endif()
+
+if (URING_TARGET)
+  message(STATUS "Fetched liburing target: ${URING_TARGET}")
+else()
+  message(FATAL_ERROR "liburing fetched, but no library target was created")
+endif()
+
 
 # Определим имя таргета, с которым будем линковаться
 set(URING_TARGET "")
