@@ -70,8 +70,13 @@ struct KV::Impl {
     if (dfd >= 0) { (void)::fsync(dfd); ::close(dfd); }
 
     // открыть новый WAL с актуальными опциями
-    wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
-                    opts.wal_max_segment_bytes, opts.flush_mode);
+  wal = WalWriter(wal_dir,
+                opts.use_uring,
+                opts.uring_queue_depth,
+                opts.uring_sqpoll,
+                opts.wal_max_segment_bytes,
+                opts.wal_group_commit_bytes,
+                opts.flush_mode);
   }
 
   // Одна итерация L0-компактации (без захвата mu внутри потенциально длительной работы)
