@@ -6,6 +6,7 @@
 #include "wal/record.hpp"
 #include "wal/segment.hpp"
 #include "wal/uring_backend.hpp"
+#include <fcntl.h> 
 
 namespace uringkv {
 
