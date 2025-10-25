@@ -59,6 +59,8 @@ bool WalReader::open_next_file() {
   return false;
 }
 
+// ... инклюды и helper-ы без изменений ...
+
 std::optional<WalReader::Item> WalReader::next() {
   if (fd_ < 0) return std::nullopt;
 
@@ -84,8 +86,25 @@ std::optional<WalReader::Item> WalReader::next() {
     return std::nullopt;
   }
 
+  // --- читаем трейлер и валидируем ---
+  WalRecordTrailer tr{};
+  if (::read(fd_, &tr, sizeof(tr)) != (ssize_t)sizeof(tr)) {
+    if (open_next_file()) return next();
+    return std::nullopt;
+  }
+  const uint32_t expect_len = static_cast<uint32_t>(sizeof(m) + m.klen + m.vlen);
+  if (tr.magic != WAL_TRAILER_MAGIC || tr.rec_len != expect_len) {
+    // оборванная запись — переходим к следующему сегменту
+    if (open_next_file()) return next();
+    return std::nullopt;
+  }
+
+  // пропускаем паддинг до 4К
+  const uint64_t used = expect_len + sizeof(WalRecordTrailer);
+  const uint64_t rem  = used % WalSegmentConst::BLOCK_SIZE;
+  if (rem) ::lseek(fd_, (off_t)(WalSegmentConst::BLOCK_SIZE - rem), SEEK_CUR);
+
   // checksum
-  extern uint64_t dummy_checksum(std::string_view, std::string_view);
   if (m.checksum != dummy_checksum(k, v)) {
     if (open_next_file()) return next();
     return std::nullopt;
@@ -93,5 +112,6 @@ std::optional<WalReader::Item> WalReader::next() {
 
   return Item{m.flags, m.seqno, std::move(k), std::move(v)};
 }
+
 
 } // namespace uringkv

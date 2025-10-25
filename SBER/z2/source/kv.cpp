@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <dirent.h>
 #include <filesystem>
 #include <mutex>
 #include <spdlog/spdlog.h>
@@ -19,6 +20,22 @@ struct KV::Impl {
   KVOptions opts;
   std::string wal_dir;
   std::string sst_dir;
+
+  void purge_wal_files_locked() {
+    DIR *d = ::opendir(wal_dir.c_str());
+    if (!d)
+      return;
+    while (auto *e = ::readdir(d)) {
+      std::string n = e->d_name;
+      if (n.size() == 10 && n.substr(6) == ".wal") {
+        ::unlink(join_path(wal_dir, n).c_str());
+      }
+    }
+    ::closedir(d);
+    // заново открыть свежий сегмент
+    wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
+                    opts.wal_max_segment_bytes);
+  }
 
   WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024};
 
@@ -101,7 +118,7 @@ struct KV::Impl {
     }
     next_sst_index = idx;
     ssts.push_back(path);
-
+    purge_wal_files_locked();
     // Очистим MemTable
     mem.clear();
     mem_bytes = 0;
