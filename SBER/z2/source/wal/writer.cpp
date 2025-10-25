@@ -1,4 +1,3 @@
-// source/wal/writer.cpp
 #include "wal/writer.hpp"
 #include "util.hpp"
 #include "wal/record.hpp"
@@ -40,13 +39,17 @@ static std::vector<std::string> list_wal_segments_sorted(const std::string &dir)
   return out;
 }
 
+// NEW: добавлены параметры fixed_buffer_bytes и submit_batch
 WalWriter::WalWriter(const std::string &wal_dir, bool use_uring,
                      unsigned uring_qd, bool uring_sqpoll,
+                     std::size_t uring_fixed_buffer_bytes, unsigned uring_submit_batch,
                      uint64_t max_segment_bytes, uint64_t group_commit_bytes,
                      FlushMode flush_mode)
     : wal_dir_(wal_dir),
       use_uring_(use_uring),
-      uring_(use_uring ? UringBackend(uring_qd, uring_sqpoll) : UringBackend()),
+      uring_(use_uring ? UringBackend(uring_qd, uring_sqpoll,
+                                      uring_fixed_buffer_bytes, uring_submit_batch)
+                       : UringBackend()),
       max_segment_bytes_(max_segment_bytes),
       group_commit_bytes_(group_commit_bytes ? group_commit_bytes : (1ull<<20)),
       flush_mode_(flush_mode) {
@@ -56,7 +59,10 @@ WalWriter::WalWriter(const std::string &wal_dir, bool use_uring,
     use_uring_ = false;
     spdlog::warn("liburing not available; falling back to POSIX I/O");
   } else if (use_uring_) {
-    spdlog::info("io_uring enabled (qd={}, sqpoll={})", uring_qd, uring_sqpoll ? "on" : "off");
+    spdlog::info("io_uring enabled (qd={}, sqpoll={}, fixed_buf={}B, submit_batch={})",
+                 uring_qd, (uring_sqpoll ? "on" : "off"),
+                 static_cast<unsigned long long>(uring_fixed_buffer_bytes),
+                 uring_submit_batch);
   }
 
   auto files = list_wal_segments_sorted(wal_dir_);

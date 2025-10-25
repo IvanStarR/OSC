@@ -27,8 +27,8 @@ TEST_CASE("WAL group-commit threshold works (replay stays correct)") {
     KVOptions o;
     o.path = dir;
     o.use_uring = false;
-    o.wal_group_commit_bytes = 1;         // максимально частый fsync
-    o.final_flush_on_close = false;       // остаёмся только в WAL
+    o.wal_group_commit_bytes = 1;         
+    o.final_flush_on_close = false;    
     o.sst_flush_threshold_bytes = (1ull<<30);
     o.background_compaction = false;
 
@@ -38,7 +38,6 @@ TEST_CASE("WAL group-commit threshold works (replay stays correct)") {
     REQUIRE(kv.del("k3"));
     REQUIRE(kv.del("k7"));
   }
-  // Пересоздаём и проверяем replay
   {
     KV kv({.path=dir, .use_uring=false, .background_compaction=false});
     for (int i=0;i<10;++i){

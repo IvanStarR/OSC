@@ -27,12 +27,15 @@ struct UringBackend::Impl {
   bool files_registered = false;
   int  registered_fd    = -1;
 
-  // fixed buffers (optional; we register a single 1MiB buffer)
-  bool buffers_registered = false;
+  // fixed buffers (optional; size is configurable)
+  bool  buffers_registered = false;
   void* buf_mem = nullptr;
-  size_t buf_len = 1u << 20; // 1 MiB
+  size_t buf_len = 0;
 
-  explicit Impl(unsigned qd, bool sqpoll) {
+  explicit Impl(unsigned qd, bool sqpoll, size_t buf_size, unsigned batch) {
+    submit_batch = batch ? batch : 16;
+    buf_len = buf_size;
+
     unsigned flags = 0;
 #ifdef IORING_SETUP_SQPOLL
     if (sqpoll) flags |= IORING_SETUP_SQPOLL;
@@ -42,7 +45,7 @@ struct UringBackend::Impl {
       spdlog::info("io_uring: SQPOLL enabled");
     }
     // Try register one contiguous buffer for write/read-fixed paths.
-    if (ok) {
+    if (ok && buf_len) {
       const size_t align = 4096;
       void* p = nullptr;
       if (posix_memalign(&p, align, buf_len) == 0 && p) {
@@ -56,6 +59,7 @@ struct UringBackend::Impl {
         } else {
           free(p);
           spdlog::warn("io_uring: failed to register buffers; continue without fixed buffers");
+          buf_len = 0;
         }
       }
     }
@@ -94,17 +98,17 @@ struct UringBackend::Impl {
     return true;
   }
 #else
-  explicit Impl(unsigned, bool) {}
+  explicit Impl(unsigned, bool, size_t, unsigned) {}
   ~Impl() = default;
 #endif
 };
 
-UringBackend::UringBackend(unsigned qd, bool sqpoll) {
+UringBackend::UringBackend(unsigned qd, bool sqpoll, size_t fixed_buffer_len, unsigned submit_batch) {
 #if URKV_HAVE_URING
-  p_ = new Impl(qd, sqpoll);
+  p_ = new Impl(qd, sqpoll, fixed_buffer_len, submit_batch);
   if (!p_->ok) { delete p_; p_ = nullptr; }
 #else
-  (void)qd; (void)sqpoll;
+  (void)qd; (void)sqpoll; (void)fixed_buffer_len; (void)submit_batch;
   p_ = nullptr;
 #endif
 }
@@ -119,8 +123,6 @@ bool UringBackend::writev(int fd, const struct ::iovec* iov, int iovcnt) {
 #if URKV_HAVE_URING
   if (!p_ || !p_->ok) return false;
 
-  // We still use WRITEV path for correctness (offset handling left to the file mode).
-  // Fixed file is ensured; fixed buffer is registered and may be used in future optimization.
   if (!p_->ensure_fixed_file(fd)) {
     io_uring_sqe* sqe = io_uring_get_sqe(&p_->ring);
     if (!sqe) return false;

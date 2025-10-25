@@ -185,7 +185,7 @@ bool SstWriter::write_sorted(
   }
 
   // ---- write hash index block ----
-  const uint64_t index_offset = file_off;
+  const uint64_t hash_index_offset = file_off;
 
   HashIndexHeader hdr{};
   hdr.magic      = kHidxMagic;
@@ -217,6 +217,7 @@ bool SstWriter::write_sorted(
   }
 
   // ---- write sparse index block (ordered keys every index_step) ----
+  const uint64_t sparse_offset = file_off;
   {
     SparseIndexHeader sh{};
     sh.magic   = kSparseMagic;
@@ -234,13 +235,19 @@ bool SstWriter::write_sorted(
       if (::write(fd_, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
       if (klen && ::write(fd_, e.first.data(), klen) != (ssize_t)klen) return false;
     }
+    file_off += sizeof(SparseIndexHeader);
+    for (auto& e : sparse) {
+      file_off += sizeof(uint32_t) + sizeof(uint64_t) + e.first.size();
+    }
   }
 
-  // ---- write footer ----
+  // ---- write footer v2 ----
   SstFooter f{};
-  f.index_offset = index_offset;                 // points to hash-index header
-  f.index_count  = static_cast<uint32_t>(table_size); // table_size by contract
-  f.version      = kSstVersion;
+  f.hash_index_offset = hash_index_offset;                    // start of HashIndexHeader
+  f.hash_table_size   = static_cast<uint32_t>(table_size);    // table size (power of two)
+  f.version           = kSstVersion;                          // = 2
+  f.sparse_offset     = sparse_offset;                        // start of sparse block
+  f.sparse_count      = static_cast<uint32_t>(sparse.size()); // number of sparse samples
   std::memset(f.magic, 0, sizeof(f.magic));
   std::memcpy(f.magic, kSstMagic, 7);
 

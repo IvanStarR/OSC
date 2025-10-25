@@ -35,14 +35,12 @@ TEST_CASE("WAL: purged after MemTable flush") {
   const auto wal_dir = std::filesystem::path(dir)/"wal";
 
   {
-    // маленький порог флаша, чтобы гарантированно ушло в SST
     KV kv({.path=dir, .sst_flush_threshold_bytes=2*1024});
     REQUIRE(kv.init_storage_layout());
     for (int i=0;i<200;++i)
       kv.put("k"+std::to_string(i), std::string(64,'a'+(i%26)));
   }
 
-  // после завершения процесса должен остаться один новый wal с header-only
   auto files = list_wals(wal_dir);
   REQUIRE(files.size() == 1);
   REQUIRE(std::filesystem::file_size(files[0]) == 4096);

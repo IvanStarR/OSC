@@ -38,7 +38,7 @@ TEST_CASE("purge leaves single 4KiB WAL header segment") {
     KVOptions o;
     o.path = dir;
     o.use_uring = false;
-    o.sst_flush_threshold_bytes = 2*1024; // гарантированный flush
+    o.sst_flush_threshold_bytes = 2*1024; 
     o.final_flush_on_close = true;
     o.background_compaction = false;
 

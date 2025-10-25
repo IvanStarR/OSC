@@ -32,19 +32,15 @@ TEST_CASE("WAL directory is purged after successful SST flush") {
   auto dir = mktmp2("uringkv_walpurge_");
 
   {
-    // маленький порог для быстрого flush
     KV kv({.path=dir, .sst_flush_threshold_bytes=16*1024});
     REQUIRE(kv.init_storage_layout());
 
-    // Запишем данных > порога, чтобы гарантированно случился flush
     for (int i=0;i<100;++i)
       kv.put("k"+std::to_string(i), std::string(512, 'x'));
   }
 
-  // после рестарта в wal/ должен остаться только новый пустой сегмент
   auto wal_dir = fs::path(dir) / "wal";
   REQUIRE(fs::exists(wal_dir));
-  REQUIRE(count_wal_files(wal_dir) >= 1); // как минимум один новый сегмент
-  // не должно быть нескольких старых сегментов (в норме ровно один)
-  REQUIRE(count_wal_files(wal_dir) <= 2); // допускаем 1-2 на медленной FS
+  REQUIRE(count_wal_files(wal_dir) >= 1); 
+  REQUIRE(count_wal_files(wal_dir) <= 2); 
 }

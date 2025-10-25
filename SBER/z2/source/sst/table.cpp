@@ -1,6 +1,8 @@
+// source/sst/table.cpp
 #include "sst/table.hpp"
 #include "util.hpp"
 #include "sst/index.hpp"
+#include "sst/footer.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -32,8 +34,8 @@ bool SstTable::load_footer_and_index() {
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return false;
   if (std::memcmp(f.magic, kSstMagic, 7) != 0 || f.version != kSstVersion) return false;
 
-  // Пытаемся замапить хеш-индекс; если не вышло — good() вернёт false, но у нас есть fallback.
-  (void)index_.open(fd_, f.index_offset, f.index_count);
+  // Try to mmap the hash index; fallback path in get() works even if it fails
+  (void)index_.open(fd_, f.hash_index_offset, f.hash_table_size);
   return true;
 }
 
@@ -49,7 +51,7 @@ bool SstTable::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, st
 std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view key) const {
   if (fd_ < 0) return std::nullopt;
 
-  // 1) Быстрый путь: через mmap-хеш-индекс
+  // 1) Fast path via mmap’ed hash index
   if (index_.good()) {
     const uint64_t h = sst_key_hash(key.data(), key.size());
     const uint64_t n = index_.table_size();
@@ -59,7 +61,7 @@ std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view k
     uint64_t pos = h & mask;
     for (uint64_t step=0; step<n; ++step) {
       const auto& e = T[pos];
-      if (e.h == 0) break; // пустой слот — точно нет ключа
+      if (e.h == 0) break; // empty slot => not found
       if (e.h == h) {
         SstRecordMeta m{}; std::string k; std::string v;
         if (!read_record_at(e.off, m, k, v)) return std::nullopt;
@@ -68,15 +70,13 @@ std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view k
           if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
           return std::make_pair(SST_FLAG_PUT, std::move(v));
         }
-        // коллизия — пробуем дальше
       }
       pos = (pos + 1) & mask;
     }
     return std::nullopt;
   }
 
-  // 2) Fallback: линейный проход по данным до начала индекса (медленнее, но корректно)
-  //   читаем футер ещё раз, чтобы узнать offset индекса
+  // 2) Fallback: linear pass up to hash_index_offset (data section end)
   off_t end = ::lseek(fd_, 0, SEEK_END);
   if (end < (off_t)sizeof(SstFooter)) return std::nullopt;
   if (::lseek(fd_, end - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return std::nullopt;
@@ -85,20 +85,18 @@ std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view k
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return std::nullopt;
 
   uint64_t off = 0;
-  while (off < f.index_offset) {
+  while (off < f.hash_index_offset) {
     SstRecordMeta m{}; std::string k; std::string v;
     if (!read_record_at(off, m, k, v)) break;
-    off += sizeof(m) + m.klen + m.vlen;
+    off += sizeof(m) + m.klen + m.vlen; // trailer/padding is only validated in SstReader
 
     if (k == key) {
       if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
       if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
       return std::make_pair(SST_FLAG_PUT, std::move(v));
     }
-
-    if (k > key) break; // записи отсортированы по ключу
+    if (k > key) break;
   }
-
   return std::nullopt;
 }
 

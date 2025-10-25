@@ -4,16 +4,35 @@
 #include <fmt/core.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <optional>
 #include <random>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+// --------- грубый трекер аллокаций для демонстрации ---------
+static std::atomic<uint64_t> g_allocs{0}, g_frees{0};
+
+void* operator new(std::size_t sz) {
+  g_allocs.fetch_add(1, std::memory_order_relaxed);
+  if (void* p = std::malloc(sz)) return p;
+  throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept {
+  g_frees.fetch_add(1, std::memory_order_relaxed);
+  std::free(p);
+}
+void operator delete(void* p, std::size_t) noexcept {
+  g_frees.fetch_add(1, std::memory_order_relaxed);
+  std::free(p);
+}
 
 // ----------------------------
 // Парсер аргументов / режимы
@@ -28,6 +47,10 @@ struct Args {
   std::string flush_mode = "fdatasync";          // fdatasync|fsync|sfr
   std::string compaction_policy = "size-tiered"; // size-tiered|leveled
   bool        uring_sqpoll = false;
+
+  // NEW: управление io_uring fixed buffers и батчем
+  uint64_t    uring_fixed_buf = 0;       // bytes, 0 = off
+  unsigned    uring_submit_batch = 16;
 
   // SST/WAL
   uint64_t    wal_segment_bytes   = 64ull * 1024 * 1024;
@@ -67,6 +90,8 @@ Common options:
   --use-uring on|off               : enable io_uring (default: off)
   --queue-depth N                  : io_uring QD (default: 256)
   --uring-sqpoll on|off            : io_uring SQPOLL (default: off)
+  --uring-fixed-buf BYTES          : size of io_uring fixed buffer (default: 0 = off)
+  --uring-submit-batch N           : SQE batch size before submit (default: 16)
   --flush fdatasync|fsync|sfr      : durability mode (default: fdatasync)
   --compaction-policy size-tiered|leveled (default: size-tiered)
   --segment BYTES                  : WAL max segment size (default: 64MiB)
@@ -136,6 +161,8 @@ static Args parse_args(int argc, char** argv) {
     if (t=="--use-uring" && need_value(i)) { if(!parse_bool(argv[++i], a.use_uring)) a.help=true; continue; }
     if (t=="--queue-depth" && need_value(i)) { a.uring_qd = std::strtoul(argv[++i],nullptr,10); continue; }
     if (t=="--uring-sqpoll" && need_value(i)) { if(!parse_bool(argv[++i], a.uring_sqpoll)) a.help=true; continue; }
+    if (t=="--uring-fixed-buf" && need_value(i)) { a.uring_fixed_buf = parse_bytes(argv[++i]); continue; }
+    if (t=="--uring-submit-batch" && need_value(i)) { a.uring_submit_batch = std::strtoul(argv[++i], nullptr, 10); continue; }
     if (t=="--flush" && need_value(i)) { a.flush_mode = argv[++i]; continue; }
     if (t=="--compaction-policy" && need_value(i)) { a.compaction_policy = argv[++i]; continue; }
     if (t=="--segment" && need_value(i)) { a.wal_segment_bytes = parse_bytes(argv[++i]); continue; }
@@ -318,15 +345,17 @@ int main(int argc, char** argv) {
   // KVOptions
   uringkv::KVOptions opts;
   opts.path                        = a.path;
-  opts.use_uring                  = a.use_uring;
-  opts.uring_queue_depth          = a.uring_qd;
-  opts.uring_sqpoll               = a.uring_sqpoll;
-  opts.wal_max_segment_bytes      = a.wal_segment_bytes;
-  opts.wal_group_commit_bytes     = a.wal_group_commit;
-  opts.sst_flush_threshold_bytes  = a.sst_flush_threshold;
-  opts.background_compaction      = a.bg_compaction;
-  opts.l0_compact_threshold       = a.l0_compact_threshold;
-  opts.table_cache_capacity       = a.table_cache_capacity;
+  opts.use_uring                   = a.use_uring;
+  opts.uring_queue_depth           = a.uring_qd;
+  opts.uring_sqpoll                = a.uring_sqpoll;
+  opts.uring_fixed_buffer_bytes    = a.uring_fixed_buf;     // NEW
+  opts.uring_submit_batch          = a.uring_submit_batch;  // NEW
+  opts.wal_max_segment_bytes       = a.wal_segment_bytes;
+  opts.wal_group_commit_bytes      = a.wal_group_commit;
+  opts.sst_flush_threshold_bytes   = a.sst_flush_threshold;
+  opts.background_compaction       = a.bg_compaction;
+  opts.l0_compact_threshold        = a.l0_compact_threshold;
+  opts.table_cache_capacity        = a.table_cache_capacity;
 
   // flush mode
   if (a.flush_mode == "fdatasync") opts.flush_mode = uringkv::FlushMode::FDATASYNC;
@@ -433,8 +462,10 @@ int main(int argc, char** argv) {
 
     fmt::print("=== uringkv bench @ {} (threads={}, ratio={} PUT:GET:DEL) ===\n",
                a.path, th, a.ratio);
-    fmt::print("opts: uring={} qd={} sqpoll={} segment={}B group-commit={}B flush={} bg_compact={} l0_thr={} table_cache={} policy={}\n",
+    fmt::print("opts: uring={} qd={} sqpoll={} fixed_buf={}B submit_batch={} "
+               "segment={}B group-commit={}B flush={} bg_compact={} l0_thr={} table_cache={} policy={}\n",
                (a.use_uring?"on":"off"), a.uring_qd, (a.uring_sqpoll?"on":"off"),
+               a.uring_fixed_buf, a.uring_submit_batch,
                a.wal_segment_bytes, a.wal_group_commit, a.flush_mode,
                (a.bg_compaction?"on":"off"), a.l0_compact_threshold, a.table_cache_capacity, a.compaction_policy);
     fmt::print("total ops: {}  elapsed: {:.3f} s  overall: {} ops/s\n\n",
@@ -443,6 +474,8 @@ int main(int argc, char** argv) {
     print_class("PUT", tot.put_cnt, tot.put_lat);
     print_class("GET", tot.get_cnt, tot.get_lat);
     print_class("DEL", tot.del_cnt, tot.del_lat);
+
+    fmt::print("\nallocations: alloc={} free={}\n", g_allocs.load(), g_frees.load());
     return 0;
   }
 
@@ -455,6 +488,7 @@ int main(int argc, char** argv) {
 
     auto snap = kv.get_metrics();
     print_metrics_once(snap);
+    fmt::print("alloc: alloc={} free={}\n", g_allocs.load(), g_frees.load());
     if (!a.watch) return 0;
 
     auto prev = snap;

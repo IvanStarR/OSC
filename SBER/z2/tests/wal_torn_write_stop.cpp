@@ -30,21 +30,18 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
   auto dir = tdir("uringkv_torn_");
 
   {
-    // ВАЖНО: выключаем финальный flush, чтобы хвост остался в WAL
     KV kv({.path=dir, .final_flush_on_close=false});
     REQUIRE(kv.init_storage_layout());
     kv.put("ok1","111");
-    kv.put("bad","222"); // эту запись будем «рвать»
+    kv.put("bad","222");
   }
 
   auto wal = std::filesystem::path(dir)/"wal"/"000001.wal";
   REQUIRE(std::filesystem::exists(wal));
 
-  // Разберём файл: найдём паддинг последней записи, чтобы резать внутри трейлера
   int fd = ::open(wal.c_str(), O_RDONLY);
   REQUIRE(fd >= 0);
 
-  // пропускаем 4К заголовок
   char header[WalSegmentConst::HEADER_SIZE];
   REQUIRE(::read(fd, header, sizeof(header)) == (ssize_t)sizeof(header));
 
@@ -68,11 +65,9 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
       REQUIRE(::read(fd, vb.data(), m.vlen) == (ssize_t)m.vlen);
     }
 
-    // трейлер
     WalRecordTrailer tr{};
     REQUIRE(::read(fd, &tr, sizeof(tr)) == (ssize_t)sizeof(tr));
 
-    // вычислим used/pad для этой записи
     const uint64_t used = sizeof(WalRecordMeta) + m.klen + m.vlen + sizeof(WalRecordTrailer);
     const uint64_t rem  = used % WalSegmentConst::BLOCK_SIZE;
     const uint64_t pad  = rem ? (WalSegmentConst::BLOCK_SIZE - rem) : 0;
@@ -85,16 +80,12 @@ TEST_CASE("WAL: torn write stops replay at last record only") {
   }
   ::close(fd);
 
-  // sanity: в журнале как минимум две записи
   REQUIRE(records >= 2);
 
-  // Обрезаем так, чтобы попасть ВНУТРЬ трейлера последней записи:
-  // ...[meta|key|value|trailer]pad  -> отрезаем pad+4 байта
   auto sz = std::filesystem::file_size(wal);
   REQUIRE(sz >= WalSegmentConst::HEADER_SIZE + last_used + last_pad);
   REQUIRE(::truncate(wal.c_str(), (off_t)(sz - (last_pad + 4))) == 0);
 
-  // Перезапуск и проверка
   {
     KV kv({.path=dir});
     auto v1 = kv.get("ok1");

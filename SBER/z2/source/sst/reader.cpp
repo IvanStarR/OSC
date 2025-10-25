@@ -37,12 +37,13 @@ bool SstReader::load_footer_and_index() {
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return false;
   if (std::memcmp(f.magic, kSstMagic, 7) != 0 || f.version != kSstVersion) return false;
 
+  data_end_off_ = f.hash_index_offset;
+  sparse_off_   = f.sparse_offset;
+  sparse_cnt_   = f.sparse_count;
+
   // mmap hash-index block (header + table)
-  if (!index_.open(fd_, f.index_offset, f.index_count)) {
-    // leave index_ unopened; we'll fallback in getters
-    return false;
-  }
-  return index_.good();
+  (void)index_.open(fd_, f.hash_index_offset, f.hash_table_size);
+  return true;
 }
 
 // read a record at exact offset; validate checksum & trailer
@@ -95,19 +96,12 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
     return std::nullopt;
   }
 
-  // 2) fallback: linear scan up to index_offset (records are 4KiB-blocked)
-  off_t endpos = ::lseek(fd_, 0, SEEK_END);
-  if (endpos < (off_t)sizeof(SstFooter)) return std::nullopt;
-  if (::lseek(fd_, endpos - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return std::nullopt;
-
-  SstFooter f{};
-  if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return std::nullopt;
-
+  // 2) fallback: linear scan up to data_end_off_ (records are 4KiB-blocked)
   uint64_t off = 0;
-  while (off < f.index_offset) {
+  while (off < data_end_off_) {
     SstRecordMeta m{}; std::string k; std::string v;
     if (!read_record_at(off, m, k, v)) break; // torn tail -> stop
-    const uint64_t used = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
+    const uint64_t used   = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
     const uint64_t padded = (used + (SST_BLOCK_SIZE - 1)) & ~(SST_BLOCK_SIZE - 1);
     off += padded;
 
@@ -120,94 +114,77 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
   return std::nullopt;
 }
 
-// ---- Sparse index structures (must match writer) ----
-struct SparseIndexHeader {
-  uint32_t magic;   // 'SIDX'
-  uint32_t version; // 1
-  uint32_t count;   // number of entries
-};
+// ---- sparse index helpers ----
+bool SstReader::load_sparse_into(std::vector<std::pair<std::string,uint64_t>>& out) const {
+  out.clear();
+  if (fd_ < 0 || sparse_off_ == 0 || sparse_cnt_ == 0) return false;
 
-static constexpr uint32_t kSparseMagic   = 0x53494458u;
-static constexpr uint32_t kSparseVersion = 1u;
+  if (::lseek(fd_, (off_t)sparse_off_, SEEK_SET) < 0) return false;
 
-static bool load_sparse_anchor(int fd, const SstFooter& f,
-                               const HashIndexHeader* hash_hdr,
-                               uint64_t& start_off,
-                               std::string_view start_key)
-{
-  start_off = 0;
+  // SparseIndexHeader {magic,version,count} already known via footer; skip struct and read entries directly.
+  // But for robustness, read and validate header again.
+  struct SparseIndexHeader {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t count;
+  } sh{};
 
-  if (!hash_hdr) return false;
-  const uint64_t hash_bytes =
-      sizeof(HashIndexHeader) + hash_hdr->table_size * sizeof(HashIndexEntry);
-  const uint64_t sparse_pos = f.index_offset + hash_bytes;
+  if (::read(fd_, &sh, sizeof(sh)) != (ssize_t)sizeof(sh)) return false;
+  if (sh.count != sparse_cnt_ || sh.magic != 0x53494458u || sh.version != 1u) return false;
 
-  // Try read sparse header
-  if (::lseek(fd, (off_t)sparse_pos, SEEK_SET) < 0) return false;
-
-  SparseIndexHeader sh{};
-  ssize_t r = ::read(fd, &sh, sizeof(sh));
-  if (r != (ssize_t)sizeof(sh)) return false;
-  if (sh.magic != kSparseMagic || sh.version != kSparseVersion || sh.count == 0) return false;
-
-  // Linear read sparse entries and pick the greatest key <= start_key
-  uint64_t best_off = 0;
-  std::string best_key;
-
-  for (uint32_t i = 0; i < sh.count; ++i) {
-    uint32_t klen = 0;
-    uint64_t off  = 0;
-    if (::read(fd, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
-    if (::read(fd, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
-
+  out.reserve(sh.count);
+  for (uint32_t i=0; i<sh.count; ++i) {
+    uint32_t klen = 0; uint64_t off = 0;
+    if (::read(fd_, &klen, sizeof(klen)) != (ssize_t)sizeof(klen)) return false;
+    if (::read(fd_, &off,  sizeof(off))  != (ssize_t)sizeof(off))  return false;
     std::string k; k.resize(klen);
-    if (klen && ::read(fd, k.data(), klen) != (ssize_t)klen) return false;
-
-    if (start_key.empty() || k <= start_key) {
-      if (best_key.empty() || k > best_key) {
-        best_key.swap(k);
-        best_off = off;
-      }
-    }
+    if (klen && ::read(fd_, k.data(), klen) != (ssize_t)klen) return false;
+    out.emplace_back(std::move(k), off);
   }
-
-  start_off = best_off;
   return true;
 }
 
-std::vector<std::pair<std::string, std::string>>
+uint64_t SstReader::find_scan_start_offset(std::string_view start) const {
+  if (start.empty()) return 0;
+
+  std::vector<std::pair<std::string,uint64_t>> sparse;
+  if (!load_sparse_into(sparse) || sparse.empty()) return 0;
+
+  // binary search for greatest key <= start
+  size_t lo = 0, hi = sparse.size();
+  while (lo < hi) {
+    size_t mid = (lo + hi) / 2;
+    if (sparse[mid].first <= start) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo == 0) return 0;
+  return sparse[lo-1].second;
+}
+
+std::vector<std::pair<std::string, std::optional<std::string>>>
 SstReader::scan(std::string_view start, std::string_view end) {
-  std::vector<std::pair<std::string,std::string>> out;
+  std::vector<std::pair<std::string,std::optional<std::string>>> out;
   if (fd_ < 0) return out;
 
-  // read footer
-  off_t endpos = ::lseek(fd_, 0, SEEK_END);
-  if (endpos < (off_t)sizeof(SstFooter)) return out;
-  if (::lseek(fd_, endpos - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return out;
+  uint64_t off = find_scan_start_offset(start);
 
-  SstFooter f{};
-  if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return out;
-
-  // try to leverage sparse index to jump close to 'start'
-  uint64_t off = 0;
-  const HashIndexHeader* hash_hdr = nullptr;
-  if (index_.good()) hash_hdr = reinterpret_cast<const HashIndexHeader*>(
-                                  reinterpret_cast<const char*>(index_.table()) - sizeof(HashIndexHeader));
-  (void)load_sparse_anchor(fd_, f, hash_hdr, off, start);
-
-  while (off < f.index_offset) {
+  while (off < data_end_off_) {
     SstRecordMeta m{}; std::string k; std::string v;
     if (!read_record_at(off, m, k, v)) break; // stop on torn tail
-    const uint64_t used = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
+    const uint64_t used   = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
     const uint64_t padded = (used + (SST_BLOCK_SIZE - 1)) & ~(SST_BLOCK_SIZE - 1);
     off += padded;
 
     if ((!start.empty() && k < start)) continue;
     if ((!end.empty()   && k > end))   break;
 
-    if (m.flags == SST_FLAG_PUT) out.emplace_back(std::move(k), std::move(v));
+    if (m.flags == SST_FLAG_PUT) {
+      out.emplace_back(std::move(k), std::optional<std::string>(std::move(v)));
+    } else if (m.flags == SST_FLAG_DEL) {
+      out.emplace_back(std::move(k), std::nullopt);
+    }
   }
-  // records already arrive in order; sort is not necessary here
+  // уже упорядочено по ключу в пределах SST
   return out;
 }
 
