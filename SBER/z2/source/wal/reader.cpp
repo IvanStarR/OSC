@@ -9,6 +9,8 @@
 
 namespace uringkv {
 
+static inline bool is_digit_uc(unsigned char c){ return std::isdigit(c) != 0; }
+
 static std::vector<std::string> list_wal_segments_sorted(const std::string& dir) {
   std::vector<std::string> out;
   DIR* d = ::opendir(dir.c_str());
@@ -16,7 +18,8 @@ static std::vector<std::string> list_wal_segments_sorted(const std::string& dir)
   while (auto* ent = ::readdir(d)) {
     std::string n = ent->d_name;
     if (n.size() == 10 && n.substr(6) == ".wal") {
-      bool digits = std::all_of(n.begin(), n.begin()+6, ::isdigit);
+      bool digits = std::all_of(n.begin(), n.begin()+6,
+                                [](char c){ return is_digit_uc(static_cast<unsigned char>(c)); });
       if (digits) out.push_back(n);
     }
   }
@@ -58,8 +61,6 @@ bool WalReader::open_next_file() {
   }
   return false;
 }
-
-// ... инклюды и helper-ы без изменений ...
 
 std::optional<WalReader::Item> WalReader::next() {
   if (fd_ < 0) return std::nullopt;
@@ -112,6 +113,5 @@ std::optional<WalReader::Item> WalReader::next() {
 
   return Item{m.flags, m.seqno, std::move(k), std::move(v)};
 }
-
 
 } // namespace uringkv

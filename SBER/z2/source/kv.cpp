@@ -91,8 +91,6 @@ struct KV::Impl {
     spdlog::info("BG-Compaction: merging {} SST files", input.size());
 
     // Шаг 2: строим финальный view (вне лока): «новее» перекрывает «старее».
-    // NB: если порядок input возрастанием индексов (старые -> новые),
-    // чтобы приоритет был у НОВЫХ, идём с конца.
     std::unordered_map<std::string, std::optional<std::string>> view;
     view.reserve(1024);
 
@@ -152,8 +150,7 @@ struct KV::Impl {
 
   void maybe_schedule_compaction_locked() {
     if (!opts.background_compaction) {
-      // В итерации 1 фоновой компактации нет; синхронный компактаут
-      // вызываем явно и только ВНЕ лока (см. деструктор).
+      // итерация 2: синхронный compact вызывается вне лока по месту, если нужно
       return;
     }
     if (ssts.size() >= opts.l0_compact_threshold) {
@@ -210,7 +207,6 @@ struct KV::Impl {
       SstWriter wr(path);
       if (!wr.write_sorted(entries)) {
         spdlog::error("SST final flush failed: {}", path);
-        // даже если не записали SST — ниже всё равно очистим WAL, чтобы не застревать
       } else {
         if (!write_current_atomic(sst_dir, idx)) {
           spdlog::warn("Failed to update CURRENT for SST {}", idx);
@@ -221,8 +217,7 @@ struct KV::Impl {
       }
     }
 
-    // ВНИМАНИЕ: синхронную компактацию здесь НЕ вызываем.
-    // Это делается уже вне лока (см. деструктор), чтобы не попасть в deadlock.
+    // синхронную компактацию НЕ вызываем здесь (делаем только вне лока)
 
     purge_wal_files_locked();
     mem.clear();
@@ -232,7 +227,6 @@ struct KV::Impl {
   void compactor_thread() {
     std::unique_lock<std::mutex> lk(mu);
     while (true) {
-      // watchdog, чтобы не залипать, даже если notify не пришёл
       cv.wait_for(lk, std::chrono::milliseconds(200),
                   [&]{ return stopping || need_compact; });
       if (stopping) break;
@@ -271,16 +265,27 @@ struct KV::Impl {
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
                     opts.wal_max_segment_bytes, opts.flush_mode);
 
-    // Прочитать имеющиеся SST и вычислить next_sst_index
+    // === Стартовое восстановление SST ===
+    // Сначала читаем CURRENT (если есть) — он источник истины.
+    uint64_t cur_index = 0;
+    const bool have_current = read_current(sst_dir, cur_index);
+
     ssts.clear();
+    next_sst_index = 0;
+
     for (auto& name : list_sst_sorted(sst_dir)) {
-      ssts.push_back(join_path(sst_dir, name));
       const uint64_t idx = std::stoull(name.substr(0, 6));
+      // Если CURRENT существует — игнорируем «сироты» с индексом > CURRENT
+      if (have_current && idx > cur_index) {
+        spdlog::warn("Ignoring orphan SST {} (> CURRENT {})", name, cur_index);
+        continue;
+      }
+      ssts.push_back(join_path(sst_dir, name));
       next_sst_index = std::max(next_sst_index, idx);
     }
-    uint64_t cur = 0;
-    if (read_current(sst_dir, cur))
-      next_sst_index = std::max(next_sst_index, cur);
+    if (have_current) {
+      next_sst_index = std::max(next_sst_index, cur_index);
+    }
 
     // WAL replay
     WalReader rd(wal_dir);

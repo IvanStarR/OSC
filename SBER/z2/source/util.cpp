@@ -5,7 +5,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <xxhash.h> 
+#include <xxhash.h>
 
 namespace uringkv {
 
@@ -25,15 +25,15 @@ std::string join_path(std::string a, std::string b) {
 }
 
 uint64_t dummy_checksum(std::string_view a, std::string_view b) {
-  XXH64_hash_t h = XXH64(a.data(), a.size(), 0);
-  h = XXH64_update(XXH64_createState(), nullptr, 0) ? h : h; // no-op safety
-  XXH64_state_t *st = XXH64_createState();
+  // Реальная XXH64: hash(key || value) с seed=0.
+  XXH64_state_t* st = XXH64_createState();
+  if (!st) return 0;
   XXH64_reset(st, 0);
-  XXH64_update(st, a.data(), a.size());
-  XXH64_update(st, b.data(), b.size());
-  h = XXH64_digest(st);
+  if (!a.empty()) XXH64_update(st, a.data(), a.size());
+  if (!b.empty()) XXH64_update(st, b.data(), b.size());
+  const uint64_t h = static_cast<uint64_t>(XXH64_digest(st));
   XXH64_freeState(st);
-  return static_cast<uint64_t>(h);
+  return h;
 }
 
 } // namespace uringkv
