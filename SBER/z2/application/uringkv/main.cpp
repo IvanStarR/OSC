@@ -16,28 +16,37 @@
 #include <vector>
 
 // ----------------------------
-// Простенький парсер аргументов
+// Парсер аргументов / режимы
 // ----------------------------
 struct Args {
-  // общие
-  std::string mode = "run";          // run | bench
+  std::string mode = "run";          // run | bench | put | get | del | scan
   std::string path = "/tmp/uringkv_demo";
 
-  // опции стораджа
+  // опции io/durability/compaction
   bool        use_uring = false;
   unsigned    uring_qd  = 256;
-  uint64_t    wal_segment_bytes = 64ull * 1024 * 1024;
+  std::string flush_mode = "fdatasync";          // fdatasync|fsync|sfr
+  std::string compaction_policy = "size-tiered"; // size-tiered|leveled
+
+  // SST/WAL
+  uint64_t    wal_segment_bytes   = 64ull * 1024 * 1024;
   uint64_t    sst_flush_threshold = 4ull * 1024 * 1024;
-  bool        bg_compaction = true;
-  size_t      l0_compact_threshold = 6;
-  size_t      table_cache_capacity = 64;
+  bool        bg_compaction       = true;
+  size_t      l0_compact_threshold= 6;
+  size_t      table_cache_capacity= 64;
 
   // bench
-  uint64_t ops = 100'000;               // сколько операций всего
-  std::string ratio = "90:5:5";         // PUT:GET:DEL (в %)
+  uint64_t ops = 100'000;
+  std::string ratio = "90:5:5";
   size_t key_len = 16;
   size_t val_len = 100;
   unsigned threads = 1;
+
+  // kv ops
+  std::string key;
+  std::string value;
+  std::string start;
+  std::string end;
 
   bool help = false;
 };
@@ -45,17 +54,25 @@ struct Args {
 static void print_usage(const char* prog) {
   fmt::print(
 R"(Usage:
-  {0} [options] [run|bench]
+  {0} [options] <run|bench|put|get|del|scan> [args...]
 
-Options (storage):
+Common options:
   --path DIR                       : data path (default: /tmp/uringkv_demo)
   --use-uring on|off               : enable io_uring (default: off)
   --queue-depth N                  : io_uring QD (default: 256)
+  --flush fdatasync|fsync|sfr      : durability mode (default: fdatasync)
+  --compaction-policy size-tiered|leveled (default: size-tiered)
   --segment BYTES                  : WAL max segment size (default: 64MiB)
-  --flush-threshold BYTES          : SST flush threshold from MemTable (default: 4MiB)
+  --flush-threshold BYTES          : SST flush threshold (default: 4MiB)
   --bg-compact on|off              : background compaction (default: on)
-  --l0-threshold N                 : L0 compaction threshold (default: 6)
+  --l0-threshold N                 : L0 compaction start threshold (default: 6)
   --table-cache N                  : table cache capacity (default: 64)
+
+KV commands:
+  put  --key K --value V
+  get  --key K
+  del  --key K
+  scan --start A --end B
 
 Bench options:
   bench                            : run micro-benchmark
@@ -67,6 +84,8 @@ Bench options:
 
 Examples:
   {0} --path /tmp/kv run
+  {0} --path /tmp/kv put --key foo --value bar
+  {0} --path /tmp/kv scan --start a --end z
   {0} --path /tmp/kv --bg-compact off --l0-threshold 8 bench --ops 200000 --ratio 80:15:5
 )",
     prog);
@@ -79,7 +98,6 @@ static bool parse_bool(std::string_view s, bool& out) {
 }
 
 static uint64_t parse_bytes(std::string_view s) {
-  // поддержка суффиксов: K/M/G
   if (s.empty()) return 0;
   char unit = s.back();
   uint64_t mul = 1;
@@ -101,10 +119,12 @@ static Args parse_args(int argc, char** argv) {
 
     auto need_value = [&](int i)->bool { return (i+1)<argc; };
 
-    if (t=="run" || t=="bench") { a.mode = std::string(t); continue; }
+    if (t=="run"||t=="bench"||t=="put"||t=="get"||t=="del"||t=="scan") { a.mode = std::string(t); continue; }
     if (t=="--path" && need_value(i)) { a.path = argv[++i]; continue; }
     if (t=="--use-uring" && need_value(i)) { if(!parse_bool(argv[++i], a.use_uring)) a.help=true; continue; }
     if (t=="--queue-depth" && need_value(i)) { a.uring_qd = std::strtoul(argv[++i],nullptr,10); continue; }
+    if (t=="--flush" && need_value(i)) { a.flush_mode = argv[++i]; continue; }
+    if (t=="--compaction-policy" && need_value(i)) { a.compaction_policy = argv[++i]; continue; }
     if (t=="--segment" && need_value(i)) { a.wal_segment_bytes = parse_bytes(argv[++i]); continue; }
     if (t=="--flush-threshold" && need_value(i)) { a.sst_flush_threshold = parse_bytes(argv[++i]); continue; }
     if (t=="--bg-compact" && need_value(i)) { if(!parse_bool(argv[++i], a.bg_compaction)) a.help=true; continue; }
@@ -117,7 +137,11 @@ static Args parse_args(int argc, char** argv) {
     if (t=="--val-len" && need_value(i)) { a.val_len = std::strtoul(argv[++i],nullptr,10); continue; }
     if (t=="--threads" && need_value(i)) { a.threads = std::strtoul(argv[++i],nullptr,10); continue; }
 
-    // неизвестный флаг
+    if (t=="--key" && need_value(i)) { a.key = argv[++i]; continue; }
+    if (t=="--value" && need_value(i)) { a.value = argv[++i]; continue; }
+    if (t=="--start" && need_value(i)) { a.start = argv[++i]; continue; }
+    if (t=="--end" && need_value(i)) { a.end = argv[++i]; continue; }
+
     spdlog::warn("Unknown arg: {}", t);
     a.help = true;
   }
@@ -125,7 +149,7 @@ static Args parse_args(int argc, char** argv) {
 }
 
 // ----------------------------
-// Вспомогалка для pXX
+// Вспомогалки
 // ----------------------------
 template<class T>
 static T percentile(std::vector<T>& v, double p) {
@@ -135,9 +159,6 @@ static T percentile(std::vector<T>& v, double p) {
   return v[idx];
 }
 
-// ----------------------------
-// Генерация случайных ключей/значений
-// ----------------------------
 static std::string rand_key(std::mt19937_64& rng, size_t len) {
   static const char alphabet[] =
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -162,7 +183,7 @@ struct BenchStats {
 };
 
 static void bench_worker(unsigned tid, const Args& a, uringkv::KVOptions base_opts,
-                         uint64_t ops, uint32_t pct_put, uint32_t pct_get, [[maybe_unused]]uint32_t pct_del,
+                         uint64_t ops, uint32_t pct_put, uint32_t pct_get, uint32_t pct_del,
                          BenchStats& out)
 {
   uringkv::KV kv(base_opts);
@@ -174,7 +195,6 @@ static void bench_worker(unsigned tid, const Args& a, uringkv::KVOptions base_op
   out.get_lat.reserve(ops);
   out.del_lat.reserve(ops);
 
-  // набор заранее созданных ключей для GET/DEL
   std::vector<std::string> keys;
   keys.reserve(ops/2);
 
@@ -218,7 +238,7 @@ int main(int argc, char** argv) {
   auto a = parse_args(argc, argv);
   if (a.help) { print_usage(argv[0]); return 0; }
 
-  // разбор ratio
+  // ratio
   uint32_t putP=90,getP=5,delP=5;
   {
     auto pos1 = a.ratio.find(':');
@@ -231,16 +251,27 @@ int main(int argc, char** argv) {
     }
   }
 
-  // сформировать KVOptions из флагов
+  // KVOptions
   uringkv::KVOptions opts;
-  opts.path                     = a.path;
-  opts.use_uring               = a.use_uring;
-  opts.uring_queue_depth       = a.uring_qd;
-  opts.wal_max_segment_bytes   = a.wal_segment_bytes;
-  opts.sst_flush_threshold_bytes = a.sst_flush_threshold;
-  opts.background_compaction   = a.bg_compaction;
-  opts.l0_compact_threshold    = a.l0_compact_threshold;
-  opts.table_cache_capacity    = a.table_cache_capacity;
+  opts.path                        = a.path;
+  opts.use_uring                  = a.use_uring;
+  opts.uring_queue_depth          = a.uring_qd;
+  opts.wal_max_segment_bytes      = a.wal_segment_bytes;
+  opts.sst_flush_threshold_bytes  = a.sst_flush_threshold;
+  opts.background_compaction      = a.bg_compaction;
+  opts.l0_compact_threshold       = a.l0_compact_threshold;
+  opts.table_cache_capacity       = a.table_cache_capacity;
+
+  // flush mode
+  if (a.flush_mode == "fdatasync") opts.flush_mode = uringkv::FlushMode::FDATASYNC;
+  else if (a.flush_mode == "fsync") opts.flush_mode = uringkv::FlushMode::FSYNC;
+  else if (a.flush_mode == "sfr")   opts.flush_mode = uringkv::FlushMode::SYNC_FILE_RANGE;
+  else { spdlog::error("Unknown --flush '{}'", a.flush_mode); return 2; }
+
+  // compaction policy (leveled заглушка)
+  if (a.compaction_policy == "size-tiered") opts.compaction_policy = uringkv::CompactionPolicy::SIZE_TIERED;
+  else if (a.compaction_policy == "leveled") opts.compaction_policy = uringkv::CompactionPolicy::LEVELED;
+  else { spdlog::error("Unknown --compaction-policy '{}'", a.compaction_policy); return 2; }
 
   if (a.mode == "run") {
     uringkv::KV kv(opts);
@@ -252,8 +283,46 @@ int main(int argc, char** argv) {
     return 0;
   }
 
+  if (a.mode == "put") {
+    if (a.key.empty()) { spdlog::error("put: --key required"); return 2; }
+    uringkv::KV kv(opts);
+    if (!kv.init_storage_layout()) { spdlog::error("init failed"); return 1; }
+    bool ok = kv.put(a.key, a.value);
+    fmt::print("{}\n", ok ? "OK" : "ERR");
+    return ok ? 0 : 1;
+  }
+
+  if (a.mode == "get") {
+    if (a.key.empty()) { spdlog::error("get: --key required"); return 2; }
+    uringkv::KV kv(opts);
+    if (!kv.init_storage_layout()) { spdlog::error("init failed"); return 1; }
+    auto v = kv.get(a.key);
+    if (!v) { fmt::print("(nil)\n"); return 1; }
+    fmt::print("{}\n", *v);
+    return 0;
+  }
+
+  if (a.mode == "del") {
+    if (a.key.empty()) { spdlog::error("del: --key required"); return 2; }
+    uringkv::KV kv(opts);
+    if (!kv.init_storage_layout()) { spdlog::error("init failed"); return 1; }
+    bool ok = kv.del(a.key);
+    fmt::print("{}\n", ok ? "OK" : "ERR");
+    return ok ? 0 : 1;
+  }
+
+  if (a.mode == "scan") {
+    uringkv::KV kv(opts);
+    if (!kv.init_storage_layout()) { spdlog::error("init failed"); return 1; }
+    auto items = kv.scan(a.start, a.end);
+    for (auto& it : items) {
+      fmt::print("{} {}\n", it.key, it.value);
+    }
+    return 0;
+  }
+
   if (a.mode == "bench") {
-    // Создаём/инициализируем
+    // init layout once
     {
       uringkv::KV kv(opts);
       if (!kv.init_storage_layout()) {
@@ -262,7 +331,6 @@ int main(int argc, char** argv) {
       }
     }
 
-    // Разобьём общее число операций по потокам
     unsigned th = std::max(1u, a.threads);
     uint64_t per = a.ops / th;
     uint64_t rem = a.ops % th;
@@ -280,7 +348,6 @@ int main(int argc, char** argv) {
     auto t1 = std::chrono::steady_clock::now();
     double sec = std::chrono::duration<double>(t1-t0).count();
 
-    // Свести статистику
     BenchStats tot;
     for (auto& s : stats) {
       tot.put_cnt += s.put_cnt; tot.get_cnt += s.get_cnt; tot.del_cnt += s.del_cnt;
@@ -300,9 +367,9 @@ int main(int argc, char** argv) {
 
     fmt::print("=== uringkv bench @ {} (threads={}, ratio={} PUT:GET:DEL) ===\n",
                a.path, th, a.ratio);
-    fmt::print("opts: uring={} qd={} segment={}B flush={}B bg_compact={} l0_thr={} table_cache={}\n",
-               (a.use_uring?"on":"off"), a.uring_qd, a.wal_segment_bytes, a.sst_flush_threshold,
-               (a.bg_compaction?"on":"off"), a.l0_compact_threshold, a.table_cache_capacity);
+    fmt::print("opts: uring={} qd={} segment={}B flush={} bg_compact={} l0_thr={} table_cache={} policy={}\n",
+               (a.use_uring?"on":"off"), a.uring_qd, a.wal_segment_bytes, a.flush_mode,
+               (a.bg_compaction?"on":"off"), a.l0_compact_threshold, a.table_cache_capacity, a.compaction_policy);
     fmt::print("total ops: {}  elapsed: {:.3f} s  overall: {} ops/s\n\n",
                a.ops, sec, static_cast<uint64_t>(a.ops/sec));
 

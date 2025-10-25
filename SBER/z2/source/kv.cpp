@@ -27,7 +27,7 @@ struct KV::Impl {
   std::string wal_dir;
   std::string sst_dir;
 
-  WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024};
+  WalWriter wal{std::string{}, false, 256, 64ull * 1024 * 1024, FlushMode::FDATASYNC};
 
   // MemTable: key -> value / tombstone
   std::unordered_map<std::string, std::optional<std::string>> mem;
@@ -52,6 +52,7 @@ struct KV::Impl {
   // ---- helpers ----
 
   void purge_wal_files_locked() {
+    // удалить все *.wal
     if (DIR* d = ::opendir(wal_dir.c_str())) {
       while (auto* e = ::readdir(d)) {
         const char* name = e->d_name;
@@ -63,11 +64,13 @@ struct KV::Impl {
       }
       ::closedir(d);
     }
+    // fsync на директории wal
     int dfd = ::open(wal_dir.c_str(), O_RDONLY | O_DIRECTORY);
     if (dfd >= 0) { (void)::fsync(dfd); ::close(dfd); }
 
+    // открыть новый WAL с актуальными опциями (включая flush_mode)
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
-                    opts.wal_max_segment_bytes);
+                    opts.wal_max_segment_bytes, opts.flush_mode);
   }
 
   // One L0 compaction pass (can be called from background thread)
@@ -242,9 +245,11 @@ struct KV::Impl {
 
     tcache = TableCache(opts.table_cache_capacity ? opts.table_cache_capacity : 64);
 
+    // ВАЖНО: создаём WAL с учётом opts.flush_mode
     wal = WalWriter(wal_dir, opts.use_uring, opts.uring_queue_depth,
-                    opts.wal_max_segment_bytes);
+                    opts.wal_max_segment_bytes, opts.flush_mode);
 
+    // Прочитать уже имеющиеся SST и вычислить next_sst_index
     ssts.clear();
     for (auto& name : list_sst_sorted(sst_dir)) {
       ssts.push_back(join_path(sst_dir, name));
