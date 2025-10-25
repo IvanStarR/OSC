@@ -1,0 +1,2 @@
+/usr/bin/ar qc ../module/liburingkv.core.a CMakeFiles/uringkv.core.dir/kv.cpp.o CMakeFiles/uringkv.core.dir/util.cpp.o CMakeFiles/uringkv.core.dir/wal.cpp.o
+/usr/bin/ranlib ../module/liburingkv.core.a
