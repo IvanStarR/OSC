@@ -24,10 +24,9 @@ std::string join_path(std::string a, std::string b) {
   return a;
 }
 
+// Чёткая и простая реализация checksum: XXH64(key || value, seed=0)
 uint64_t dummy_checksum(std::string_view a, std::string_view b) {
-  // Реальная XXH64: hash(key || value) с seed=0.
   XXH64_state_t* st = XXH64_createState();
-  if (!st) return 0;
   XXH64_reset(st, 0);
   if (!a.empty()) XXH64_update(st, a.data(), a.size());
   if (!b.empty()) XXH64_update(st, b.data(), b.size());

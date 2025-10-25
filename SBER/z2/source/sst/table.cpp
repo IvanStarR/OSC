@@ -32,9 +32,9 @@ bool SstTable::load_footer_and_index() {
   if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return false;
   if (std::memcmp(f.magic, kSstMagic, 7) != 0 || f.version != kSstVersion) return false;
 
-  // mmap hash-index block
-  if (!index_.open(fd_, f.index_offset, f.index_count)) return false;
-  return index_.good();
+  // Пытаемся замапить хеш-индекс; если не вышло — good() вернёт false, но у нас есть fallback.
+  (void)index_.open(fd_, f.index_offset, f.index_count);
+  return true;
 }
 
 bool SstTable::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, std::string& v) const {
@@ -47,30 +47,58 @@ bool SstTable::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, st
 }
 
 std::optional<std::pair<uint32_t, std::string>> SstTable::get(std::string_view key) const {
-  if (!good()) return std::nullopt;
+  if (fd_ < 0) return std::nullopt;
 
-  const uint64_t h = sst_key_hash(key.data(), key.size());
-  const uint64_t n = index_.table_size();
-  const auto*    T = index_.table();
-  const uint64_t mask = n - 1;
+  // 1) Быстрый путь: через mmap-хеш-индекс
+  if (index_.good()) {
+    const uint64_t h = sst_key_hash(key.data(), key.size());
+    const uint64_t n = index_.table_size();
+    const auto*    T = index_.table();
+    const uint64_t mask = n - 1;
 
-  // linear probing
-  uint64_t pos = h & mask;
-  for (uint64_t step=0; step<n; ++step) {
-    const auto& e = T[pos];
-    if (e.h == 0) break;            // пустой слот => не найдено
-    if (e.h == h) {
-      SstRecordMeta m{}; std::string k; std::string v;
-      if (!read_record_at(e.off, m, k, v)) return std::nullopt;
-      if (k == key) {
-        if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
-        if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
-        return std::make_pair(SST_FLAG_PUT, std::move(v));
+    uint64_t pos = h & mask;
+    for (uint64_t step=0; step<n; ++step) {
+      const auto& e = T[pos];
+      if (e.h == 0) break; // пустой слот — точно нет ключа
+      if (e.h == h) {
+        SstRecordMeta m{}; std::string k; std::string v;
+        if (!read_record_at(e.off, m, k, v)) return std::nullopt;
+        if (k == key) {
+          if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
+          if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
+          return std::make_pair(SST_FLAG_PUT, std::move(v));
+        }
+        // коллизия — пробуем дальше
       }
-      // хеш совпал, но ключ другой — коллизия, пробуем дальше
+      pos = (pos + 1) & mask;
     }
-    pos = (pos + 1) & mask;
+    return std::nullopt;
   }
+
+  // 2) Fallback: линейный проход по данным до начала индекса (медленнее, но корректно)
+  //   читаем футер ещё раз, чтобы узнать offset индекса
+  off_t end = ::lseek(fd_, 0, SEEK_END);
+  if (end < (off_t)sizeof(SstFooter)) return std::nullopt;
+  if (::lseek(fd_, end - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return std::nullopt;
+
+  SstFooter f{};
+  if (::read(fd_, &f, sizeof(f)) != (ssize_t)sizeof(f)) return std::nullopt;
+
+  uint64_t off = 0;
+  while (off < f.index_offset) {
+    SstRecordMeta m{}; std::string k; std::string v;
+    if (!read_record_at(off, m, k, v)) break;
+    off += sizeof(m) + m.klen + m.vlen;
+
+    if (k == key) {
+      if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
+      if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
+      return std::make_pair(SST_FLAG_PUT, std::move(v));
+    }
+
+    if (k > key) break; // записи отсортированы по ключу
+  }
+
   return std::nullopt;
 }
 
