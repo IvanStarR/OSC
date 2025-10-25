@@ -4,7 +4,7 @@
 #include <string>
 #include <unordered_map>
 
-#include "uringkv/sst/table.hpp"
+#include "sst/table.hpp"
 
 namespace uringkv {
 
