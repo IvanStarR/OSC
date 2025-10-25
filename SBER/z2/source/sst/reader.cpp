@@ -2,6 +2,7 @@
 #include "sst/reader.hpp"
 #include "sst/footer.hpp"
 #include "sst/index.hpp"
+#include "sst/record.hpp"
 #include "util.hpp"
 
 #include <xxhash.h>
@@ -44,12 +45,24 @@ bool SstReader::load_footer_and_index() {
   return index_.good();
 }
 
+// read a record at exact offset; validate checksum & trailer
 bool SstReader::read_record_at(uint64_t off, SstRecordMeta& m, std::string& k, std::string& v) {
   if (::lseek(fd_, (off_t)off, SEEK_SET) < 0) return false;
+
   if (::read(fd_, &m, sizeof(m)) != (ssize_t)sizeof(m)) return false;
   k.resize(m.klen); v.resize(m.vlen);
   if (m.klen && ::read(fd_, k.data(), m.klen) != (ssize_t)m.klen) return false;
   if (m.vlen && ::read(fd_, v.data(), m.vlen) != (ssize_t)m.vlen) return false;
+
+  // trailer
+  SstRecordTrailer tr{};
+  if (::read(fd_, &tr, sizeof(tr)) != (ssize_t)sizeof(tr)) return false;
+  const uint32_t expect_len = static_cast<uint32_t>(sizeof(SstRecordMeta) + m.klen + m.vlen);
+  if (tr.magic != SST_TRAILER_MAGIC || tr.rec_len != expect_len) return false;
+
+  // checksum verify (after we have full key/value)
+  if (m.checksum != dummy_checksum(k, v)) return false;
+
   return true;
 }
 
@@ -72,7 +85,6 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
         SstRecordMeta m{}; std::string k; std::string v;
         if (!read_record_at(e.off, m, k, v)) return std::nullopt;
         if (k == key) {
-          if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
           if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
           return std::make_pair(SST_FLAG_PUT, std::move(v));
         }
@@ -83,7 +95,7 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
     return std::nullopt;
   }
 
-  // 2) fallback: linear scan up to index_offset (sorted records)
+  // 2) fallback: linear scan up to index_offset (records are 4KiB-blocked)
   off_t endpos = ::lseek(fd_, 0, SEEK_END);
   if (endpos < (off_t)sizeof(SstFooter)) return std::nullopt;
   if (::lseek(fd_, endpos - (off_t)sizeof(SstFooter), SEEK_SET) < 0) return std::nullopt;
@@ -94,11 +106,12 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
   uint64_t off = 0;
   while (off < f.index_offset) {
     SstRecordMeta m{}; std::string k; std::string v;
-    if (!read_record_at(off, m, k, v)) break;
-    off += sizeof(m) + m.klen + m.vlen;
+    if (!read_record_at(off, m, k, v)) break; // torn tail -> stop
+    const uint64_t used = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
+    const uint64_t padded = (used + (SST_BLOCK_SIZE - 1)) & ~(SST_BLOCK_SIZE - 1);
+    off += padded;
 
     if (k == key) {
-      if (m.checksum != dummy_checksum(k, v)) return std::nullopt;
       if (m.flags == SST_FLAG_DEL) return std::make_pair(SST_FLAG_DEL, std::string{});
       return std::make_pair(SST_FLAG_PUT, std::move(v));
     }
@@ -109,7 +122,7 @@ std::optional<std::pair<uint32_t, std::string>> SstReader::get(std::string_view 
 
 std::vector<std::pair<std::string, std::string>>
 SstReader::scan(std::string_view start, std::string_view end) {
-  // Simple linear pass until index_offset (kept for iteration 1).
+  // Linear pass with torn-tail protection & block stepping.
   std::vector<std::pair<std::string,std::string>> out;
 
   if (fd_ < 0) return out;
@@ -124,14 +137,15 @@ SstReader::scan(std::string_view start, std::string_view end) {
   uint64_t off = 0;
   while (off < f.index_offset) {
     SstRecordMeta m{}; std::string k; std::string v;
-    if (!read_record_at(off, m, k, v)) break;
-    off += sizeof(m) + m.klen + m.vlen;
+    if (!read_record_at(off, m, k, v)) break; // stop on torn tail
+    const uint64_t used = sizeof(SstRecordMeta) + m.klen + m.vlen + sizeof(SstRecordTrailer);
+    const uint64_t padded = (used + (SST_BLOCK_SIZE - 1)) & ~(SST_BLOCK_SIZE - 1);
+    off += padded;
 
     if ((!start.empty() && k < start) || (!end.empty() && k > end)) {
       if (!end.empty() && k > end) break;
       continue;
     }
-    if (m.checksum != dummy_checksum(k, v)) break;
     if (m.flags == SST_FLAG_PUT) out.emplace_back(std::move(k), std::move(v));
   }
   std::sort(out.begin(), out.end(), [](auto& a, auto& b){ return a.first < b.first; });

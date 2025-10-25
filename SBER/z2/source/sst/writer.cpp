@@ -51,6 +51,11 @@ static inline uint64_t next_pow2(uint64_t x) {
   return x + 1;
 }
 
+static inline uint64_t roundup_4k(uint64_t n) {
+  const uint64_t rem = n % SST_BLOCK_SIZE;
+  return rem ? (n + (SST_BLOCK_SIZE - rem)) : n;
+}
+
 bool SstWriter::write_sorted(
     const std::vector<std::pair<std::string, std::optional<std::string>>>& entries,
     uint32_t /*index_step*/)
@@ -67,11 +72,17 @@ bool SstWriter::write_sorted(
   }
 
   // ---- write records (data section) ----
-  uint64_t offset = 0;
+  uint64_t file_off = 0;
+  std::vector<uint64_t> rec_offsets;
+  rec_offsets.reserve(entries.size());
+
   for (const auto& kv : entries) {
     const std::string& k = kv.first;
     const bool is_put = kv.second.has_value();
     const std::string_view v = is_put ? std::string_view(*kv.second) : std::string_view();
+
+    // record start offset for index
+    rec_offsets.push_back(file_off);
 
     const uint64_t h = xxh64_concat(k, v);
 
@@ -82,6 +93,7 @@ bool SstWriter::write_sorted(
       h
     };
 
+    // write meta + key + value
     struct ::iovec iov[3];
     iov[0].iov_base = const_cast<SstRecordMeta*>(&m);
     iov[0].iov_len  = sizeof(m);
@@ -95,47 +107,65 @@ bool SstWriter::write_sorted(
       spdlog::error("SST writev failed (errno={}): {}", errno, path_);
       return false;
     }
-    offset += static_cast<uint64_t>(w);
+    const uint64_t body = static_cast<uint64_t>(w);
+    const uint64_t expect_body = sizeof(SstRecordMeta) + k.size() + v.size();
+    if (body != expect_body) {
+      spdlog::error("SST writev short write: {} < {}", body, expect_body);
+      return false;
+    }
+
+    // trailer
+    SstRecordTrailer tr{};
+    tr.rec_len = static_cast<uint32_t>(expect_body);
+    tr.magic   = SST_TRAILER_MAGIC;
+
+    if (::write(fd_, &tr, sizeof(tr)) != (ssize_t)sizeof(tr)) {
+      spdlog::error("SST write trailer failed");
+      return false;
+    }
+
+    // pad to 4KiB boundary
+    const uint64_t used = body + sizeof(SstRecordTrailer);
+    const uint64_t padded = roundup_4k(used);
+    uint64_t pad = padded - used;
+    if (pad) {
+      // write zeros
+      static const char zeros[4096] = {0};
+      while (pad > 0) {
+        const size_t chunk = static_cast<size_t>(std::min<uint64_t>(pad, sizeof(zeros)));
+        ssize_t pw = ::write(fd_, zeros, chunk);
+        if (pw < 0) { spdlog::error("SST pad write failed"); return false; }
+        pad -= static_cast<uint64_t>(pw);
+      }
+    }
+    file_off += padded;
   }
 
   // ---- build mmap-able hash index in memory ----
-  // We index every record (PUT/DEL) so lookups can return tombstones.
-  uint64_t items = static_cast<uint64_t>(entries.size());
-  // keep load factor <= 0.5
-  uint64_t table_size = next_pow2(std::max<uint64_t>(1, items * 2));
+  const uint64_t items = static_cast<uint64_t>(entries.size());
+  const uint64_t table_size = next_pow2(std::max<uint64_t>(1, items * 2)); // load factor <= 0.5
   std::vector<HashIndexEntry> table(table_size);
   std::fill(table.begin(), table.end(), HashIndexEntry{0, 0});
 
-  uint64_t cur_off = 0;
-  for (const auto& kv : entries) {
-    const std::string& k = kv.first;
-    const std::string_view v = kv.second ? std::string_view(*kv.second) : std::string_view();
-
-    // meta + key + value length to advance offset after placing entry
-    const uint64_t rec_len = sizeof(SstRecordMeta) +
-                             static_cast<uint64_t>(k.size()) +
-                             static_cast<uint64_t>(v.size());
-
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const auto& k = entries[i].first;
     uint64_t h = sst_key_hash(k.data(), k.size());
     if (h == 0) h = 1; // reserve 0 for "empty"
-
     const uint64_t mask = table_size - 1;
     uint64_t pos = h & mask;
 
     for (uint64_t step = 0; step < table_size; ++step) {
       if (table[pos].h == 0) {
-        table[pos].h = h;
-        table[pos].off = cur_off;
+        table[pos].h   = h;
+        table[pos].off = rec_offsets[i]; // start of record
         break;
       }
       pos = (pos + 1) & mask;
     }
-
-    cur_off += rec_len;
   }
 
   // ---- write index block ----
-  const uint64_t index_offset = offset;
+  const uint64_t index_offset = file_off;
 
   HashIndexHeader hdr{};
   hdr.magic      = kHidxMagic;
@@ -150,7 +180,7 @@ bool SstWriter::write_sorted(
       spdlog::error("SST index header write failed");
       return false;
     }
-    offset += static_cast<uint64_t>(w);
+    file_off += static_cast<uint64_t>(w);
   }
   // table
   {
@@ -164,7 +194,7 @@ bool SstWriter::write_sorted(
       }
       ptr  += w;
       left -= static_cast<size_t>(w);
-      offset += static_cast<uint64_t>(w);
+      file_off += static_cast<uint64_t>(w);
     }
   }
 
