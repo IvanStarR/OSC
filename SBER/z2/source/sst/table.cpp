@@ -1,5 +1,5 @@
-#include "uringkv/sst/table.hpp"
-#include "uringkv/util.hpp"
+#include "sst/table.hpp"
+#include "util.hpp"
 
 #include <algorithm>
 #include <cstring>
