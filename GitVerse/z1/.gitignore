@@ -1,0 +1,66 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Linker files
+*.ilk
+
+# Debugger Files
+*.pdb
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# debug information files
+*.dwo
+
+
+build-*
+!build-deb-*.sh
+.vscode/
+
+*.test.sh
+*.test.json
+*.log
+*.tmp
+version/version.cpp
+config/server.json
+config/server.teststart.json
+.PVS-*
+.test*
+*doctest_registerlibrary.cpp
+docs/.structurizr
+
+build
+build/
+
+
+
+config.json
+events.json 
