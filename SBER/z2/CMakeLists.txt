@@ -43,7 +43,7 @@ endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT PERFOMANCE_TRACE)
         if(CLANG_TIDY_CHECK)
-                find_program(CLANG_TIDY clang-tidy-15)
+                #find_program(CLANG_TIDY clang-tidy-15)
 
                 if(NOT CLANG_TIDY)
                         message(FATAL_ERROR "clang-tidy-15 is not found! Please install it.")
