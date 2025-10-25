@@ -22,6 +22,8 @@ static std::string mktemp_dir5(const char* prefix) {
   return p.string();
 }
 
+// ... инклюды сверху без изменений ...
+
 TEST_CASE("WAL tail corruption: first record survives") {
   auto dir = mktemp_dir5("uringkv_corrupt_");
   {
@@ -33,16 +35,23 @@ TEST_CASE("WAL tail corruption: first record survives") {
 
   auto wal_path = std::filesystem::path(dir) / "wal" / "000001.wal";
   REQUIRE(std::filesystem::exists(wal_path));
+
   {
+    // Берём точный размер файла
+    const auto fsize = std::filesystem::file_size(wal_path);
+    REQUIRE(fsize > 0);
+
     std::fstream f(wal_path, std::ios::in | std::ios::out | std::ios::binary);
     REQUIRE(f.good());
-    f.seekg(0, std::ios::end);
-    auto len = f.tellg();
-    REQUIRE(len > 0);
-    f.seekp(len - 1);
-    char bad = 0xFF;
+
+    // Позиционируемся на последний байт от начала
+    f.seekp(static_cast<std::streamoff>(fsize - 1), std::ios::beg);
+    REQUIRE(f.good());
+
+    const char bad = static_cast<char>(0xFF);
     f.write(&bad, 1);
     f.flush();
+    REQUIRE(f.good());
   }
 
   {
@@ -51,7 +60,9 @@ TEST_CASE("WAL tail corruption: first record survives") {
     REQUIRE(va.has_value());
     REQUIRE(*va == "111");
 
-    auto vb = kv.get("b");
-    (void)vb;
+    // Второй ключ может пропасть из-за checksum mismatch — это допустимо для данного MVP.
+    // Если остался — тоже ок.
+    (void)kv.get("b");
   }
 }
+
