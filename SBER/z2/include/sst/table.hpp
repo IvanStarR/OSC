@@ -31,7 +31,7 @@ private:
 
   std::string path_;
   int fd_ = -1;
-  SstIndex index_;
+  MmapHashIndex index_;
 };
 
 } // namespace uringkv

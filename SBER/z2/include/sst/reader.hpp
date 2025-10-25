@@ -24,7 +24,7 @@ private:
 
   std::string path_;
   int fd_ = -1;
-  SstIndex index_;          // загруженный индекс
+  MmapHashIndex index_;        // загруженный индекс
 };
 
 } // namespace uringkv
