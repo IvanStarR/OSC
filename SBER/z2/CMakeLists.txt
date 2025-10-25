@@ -45,11 +45,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT PERFOMANCE_TRACE)
         if(CLANG_TIDY_CHECK)
                 #find_program(CLANG_TIDY clang-tidy-15)
 
-                if(NOT CLANG_TIDY)
-                        message(FATAL_ERROR "clang-tidy-15 is not found! Please install it.")
-                endif()
+                # if(NOT CLANG_TIDY)
+                #         message(FATAL_ERROR "clang-tidy-15 is not found! Please install it.")
+                #endif()
 
-                set(CMAKE_CXX_CLANG_TIDY "clang-tidy-15;-format-style=file;-header-filter=^(${CMAKE_CURRENT_SOURCE_DIR}/application|${CMAKE_CURRENT_SOURCE_DIR}/source|${CMAKE_CURRENT_SOURCE_DIR}/include)/;-config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy")
+                # set(CMAKE_CXX_CLANG_TIDY "clang-tidy-15;-format-style=file;-header-filter=^(${CMAKE_CURRENT_SOURCE_DIR}/application|${CMAKE_CURRENT_SOURCE_DIR}/source|${CMAKE_CURRENT_SOURCE_DIR}/include)/;-config-file=${CMAKE_CURRENT_SOURCE_DIR}/.clang-tidy")
         endif()
 endif()
 
@@ -92,7 +92,7 @@ execute_process(COMMAND date "+%Y-%m-%d %H:%M:%S"
         ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-if (VERSION_MAJOR STREQUAL "default")
+if(VERSION_MAJOR STREQUAL "default")
         execute_process(COMMAND date "+%Y-%m-%d"
                 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                 OUTPUT_VARIABLE VERSION_MAJOR
@@ -111,30 +111,30 @@ include_directories(include
 include(FetchContent)
 set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
-fmt
-GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-GIT_TAG 10.2.1
+        fmt
+        GIT_REPOSITORY https://github.com/fmtlib/fmt.git
+        GIT_TAG 10.2.1
 )
 FetchContent_MakeAvailable(fmt)
 
 
 set(SPDLOG_FMT_EXTERNAL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
-spdlog
-GIT_REPOSITORY https://github.com/gabime/spdlog.git
-GIT_TAG v1.13.0
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.13.0
 )
 FetchContent_MakeAvailable(spdlog)
 
 option(URINGKV_ENABLE_TESTS "Build tests" ON)
 
-if (URINGKV_ENABLE_TESTS)
-  FetchContent_Declare(
-    catch2
-    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-    GIT_TAG v3.5.3
-  )
-  FetchContent_MakeAvailable(catch2)
+if(URINGKV_ENABLE_TESTS)
+        FetchContent_Declare(
+                catch2
+                GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+                GIT_TAG v3.5.3
+        )
+        FetchContent_MakeAvailable(catch2)
 endif()
 
 
