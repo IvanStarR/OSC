@@ -141,11 +141,6 @@ if(URINGKV_ENABLE_TESTS)
     FetchContent_MakeAvailable(catch2)
 endif()
 
-FetchContent_Declare(
-    asio
-    URL https://github.com/chriskohlhoff/asio/archive/refs/tags/${VER_ASIO}.tar.gz
-)
-FetchContent_MakeAvailable(asio)
 
 find_package(Threads REQUIRED)
 
