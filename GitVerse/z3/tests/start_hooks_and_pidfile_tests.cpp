@@ -57,8 +57,6 @@ TEST_CASE("PIDFile is honored and overrides fork pid") {
 
   auto pidf = repo / "svc.pid";
 
-  // Процесс: шелл, который записывает $$ (PID шела), затем спит.
-  // Шелл не форкается дальше — но мы тестируем сам механизм ожидания PIDFile.
   auto unit = repo / "services" / "svc.unit";
   {
     std::ofstream o(unit);
@@ -74,12 +72,10 @@ TEST_CASE("PIDFile is honored and overrides fork pid") {
   fs::current_path(mkd("wd_pidfile"));
   REQUIRE(run_app({"gitproc","start","--repo",repo.string(),"--unit","services/svc.unit"}) == 0);
 
-  // читаем pid из run/svc.pid
   std::this_thread::sleep_for(300ms);
   std::ifstream in("run/svc.pid"); REQUIRE(in.good());
   int p_run=-1; in >> p_run; REQUIRE(p_run > 0);
 
-  // должен совпадать с содержимым собственного pid-файла
   std::ifstream in2(pidf); int p2=-1; in2 >> p2; REQUIRE(p2 == p_run);
 
   REQUIRE(run_app({"gitproc","stop","--repo",repo.string(),"--unit","services/svc.unit"}) == 0);

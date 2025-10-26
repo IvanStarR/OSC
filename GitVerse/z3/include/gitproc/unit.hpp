@@ -1,8 +1,8 @@
 #pragma once
 #include <filesystem>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 namespace gitproc {
 
@@ -11,8 +11,7 @@ enum class RestartPolicy { Never, OnFailure, Always };
 struct Unit {
   std::filesystem::path path;
 
-  // parsed fields
-  std::vector<std::string> exec; // ExecStart split
+  std::vector<std::string> exec;
   std::vector<std::string> exec_start_pre;
   std::vector<std::string> exec_start_post;
   std::string exec_reload;
@@ -20,7 +19,7 @@ struct Unit {
   std::vector<std::string> exec_health;
 
   std::filesystem::path working_dir;
-  std::unordered_map<std::string,std::string> env;
+  std::unordered_map<std::string, std::string> env;
   std::vector<std::filesystem::path> env_files;
 
   std::filesystem::path pid_file;
@@ -42,7 +41,7 @@ struct Unit {
   std::vector<std::string> after;
 
   std::string name() const;
-  static Unit Load(const std::filesystem::path& p);
+  static Unit Load(const std::filesystem::path &p);
 };
 
 } // namespace gitproc

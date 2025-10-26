@@ -21,7 +21,6 @@ TEST_CASE("GitRepo resolve and revision") {
   auto repo_root = mkd("resolve");
   fs::create_directories(repo_root / "services");
 
-  // create services/web.unit
   auto unit = repo_root / "services" / "web.unit";
   {
     std::ofstream o(unit);
@@ -54,19 +53,15 @@ TEST_CASE("Watcher detects change via mtime/size (with priming)") {
   auto repo = GitRepo::open_local(repo_root);
 
   int changes = 0;
-  // Конструктор: (repo, unit_rel_or_path, branch, callback)
   Watcher w(repo, "services/job.unit", "main",
             [&](const fs::path& p){ (void)p; changes++; });
 
-  // 1) Первое наблюдение — прогрев кеша, не считается изменением
   REQUIRE(w.poll_once() == false);
   REQUIRE(changes == 0);
 
-  // 2) Без изменений — по-прежнему false
   REQUIRE(w.poll_once() == false);
   REQUIRE(changes == 0);
 
-  // 3) Модифицируем файл и ждём, пока watcher зафиксирует изменение
   {
     std::ofstream o(unit, std::ios::app);
     o << "# touch\n";

@@ -16,7 +16,6 @@ TEST_CASE("log rotation rolls files") {
   auto d = mkd("rot");
   auto base = d / "test.log";
 
-  // создаём файл > 1KB
   {
     std::ofstream o(base);
     for (int i=0;i<2000;i++) o << "x";
@@ -25,7 +24,6 @@ TEST_CASE("log rotation rolls files") {
   REQUIRE(fs::exists(base));
   REQUIRE(fs::exists(d / "test.log.1"));
 
-  // повторно раскатим ещё раз
   {
     std::ofstream o(base, std::ios::app);
     for (int i=0;i<2000;i++) o << "y";

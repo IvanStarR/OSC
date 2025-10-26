@@ -23,20 +23,17 @@ TEST_CASE("Rollback unit to specific commit") {
   auto repo = mkd("repo");
   fs::create_directories(repo/"services");
 
-  // git init
   sh("git init", repo);
   sh("git config user.email test@example.com", repo);
   sh("git config user.name tester", repo);
 
   auto unit = repo/"services"/"svc.unit";
 
-  // v1
   {
     std::ofstream(unit) << "[Service]\nExecStart=/bin/sleep 1\n";
     sh("git add .", repo);
     sh("git commit -m v1", repo);
   }
-  // save commit id v1
   FILE* p = popen(("cd \"" + repo.string() + "\" && git rev-parse HEAD").c_str(), "r");
   REQUIRE(p);
   char buf[128] = {0};
@@ -44,7 +41,6 @@ TEST_CASE("Rollback unit to specific commit") {
   pclose(p);
   std::string c1(buf); while(!c1.empty() && (c1.back()=='\n'||c1.back()=='\r')) c1.pop_back();
 
-  // v2
   {
     std::ofstream(unit) << "[Service]\nExecStart=/bin/sleep 2\n";
     sh("git add .", repo);
@@ -54,10 +50,8 @@ TEST_CASE("Rollback unit to specific commit") {
   Supervisor sv(fs::current_path());
   REQUIRE(sv.open_repo(repo.string(), "main"));
 
-  // откатим к v1
   REQUIRE(sv.rollback_unit("svc", c1));
 
-  // сверим контент
   std::ifstream in(unit);
   std::string s((std::istreambuf_iterator<char>(in)), {});
   REQUIRE(s.find("sleep 1") != std::string::npos);

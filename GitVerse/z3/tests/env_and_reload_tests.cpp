@@ -15,7 +15,6 @@ static fs::path mkd(const char* name){
   return d;
 }
 
-// утилита запуска App
 static int run_app(std::vector<std::string> args){
   std::vector<char*> argv; argv.reserve(args.size()+1);
   for (auto& s : args) argv.push_back(const_cast<char*>(s.c_str()));
@@ -46,7 +45,6 @@ TEST_CASE("EnvironmentFile exports variables to child process") {
   fs::current_path(mkd("wd_env"));
   REQUIRE(run_app({"gitproc","start","--repo",repo.string(),"--unit","services/env.unit"}) == 0);
 
-  // подождём, чтобы процесс успел записать в лог
   std::this_thread::sleep_for(500ms);
 
   // читаем stdout
@@ -79,7 +77,6 @@ TEST_CASE("ExecReload keeps PID and executes command") {
   fs::current_path(mkd("wd_reload"));
   REQUIRE(run_app({"gitproc","start","--repo",repo.string(),"--unit","services/svc.unit"}) == 0);
 
-  // pid до
   std::string before;
   {
     FILE* f = popen("cat run/svc.pid 2>/dev/null", "r");
@@ -90,7 +87,6 @@ TEST_CASE("ExecReload keeps PID and executes command") {
   // reload
   REQUIRE(run_app({"gitproc","reload","--repo",repo.string(),"--unit","services/svc.unit"}) == 0);
 
-  // pid после — тот же
   std::string after;
   {
     FILE* f = popen("cat run/svc.pid 2>/dev/null", "r");
@@ -98,7 +94,6 @@ TEST_CASE("ExecReload keeps PID and executes command") {
   }
   REQUIRE(before == after);
 
-  // mark-файл создан
   REQUIRE(fs::exists(mark));
 
   REQUIRE(run_app({"gitproc","stop","--repo",repo.string(),"--unit","services/svc.unit"}) == 0);

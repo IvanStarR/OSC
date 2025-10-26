@@ -4,6 +4,6 @@
 namespace gitproc {
 class App {
 public:
-  int run(int argc, char** argv);
+  int run(int argc, char **argv);
 };
 } // namespace gitproc

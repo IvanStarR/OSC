@@ -34,9 +34,7 @@ TEST_CASE("Supervisor restarts on failure (on-failure)") {
   Unit u = Unit::Load(unit);
   REQUIRE(sup.start(u) == true);
 
-  // подождём пару секунд — должно быть несколько перезапусков
   std::this_thread::sleep_for(2500ms);
-  // тест «мягкий»: сам факт что Supervisor не упал
   REQUIRE(true);
 
   REQUIRE(sup.stop() == true);
@@ -60,7 +58,6 @@ TEST_CASE("Health-check restarts on failure") {
   Unit u = Unit::Load(unit);
   REQUIRE(sup.start(u) == true);
 
-  // Через ~1-2 сек health упадёт и вызовет рестарт — просто подождём
   std::this_thread::sleep_for(2500ms);
   REQUIRE(sup.stop() == true);
 }

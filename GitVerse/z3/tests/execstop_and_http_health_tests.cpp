@@ -65,13 +65,8 @@ TEST_CASE("Built-in HTTP health restarts service when unhealthy"){
   fs::current_path(mkd("wd_http"));
   REQUIRE(run_app({"gitproc","start","--repo",repo.string(),"--unit","services/web.unit"}) == 0);
 
-  // здоров: подождём 2 цикла
   std::this_thread::sleep_for(2500ms);
-  // убьём порт, чтобы health упал: самый простой способ — остановить сервис вручную,
-  // а затем сразу проверить, что supervisor перезапускает
   REQUIRE(run_app({"gitproc","stop","--repo",repo.string(),"--unit","services/web.unit"}) == 0);
-  // supervisor автоматически не перезапустит после ручного stop; нам важен код клиента:
-  // перезапустим снова и сделаем URL «плохим» (на другой путь/порт)
   {
     std::ofstream o(unit);
     o <<
@@ -83,12 +78,9 @@ TEST_CASE("Built-in HTTP health restarts service when unhealthy"){
 "HealthHttpTimeoutMs=800\n"
 "HealthHttpExpect=200-299\n";
   }
-  // Стартуем; health увидит 404 и инициирует рестарт,
-  // корректность проверим тем, что статус хотя бы «running»
   REQUIRE(run_app({"gitproc","start","--repo",repo.string(),"--unit","services/web.unit"}) == 0);
   std::this_thread::sleep_for(2500ms);
   REQUIRE(run_app({"gitproc","status","--repo",repo.string(),"--unit","services/web.unit"}) == 0);
 
-  // Чисто завершим
   REQUIRE(run_app({"gitproc","stop","--repo",repo.string(),"--unit","services/web.unit"}) == 0);
 }
