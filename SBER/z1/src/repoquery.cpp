@@ -8,7 +8,6 @@
 #include "exec.hpp"
 
 static std::string strip_to_name(const std::string& nevra) {
-    // отрезаем по первой '-' перед цифрой (эвристика)
     for (size_t i = 0; i < nevra.size(); ++i)
         if (nevra[i] == '-' && i + 1 < nevra.size() && isdigit((unsigned char)nevra[i + 1]))
             return nevra.substr(0, i);
@@ -50,7 +49,6 @@ std::vector<std::string> list_all_srpms(const Config& cfg) {
     std::vector<std::string> names;
     names.reserve(lines.size());
     for (auto& x : lines) {
-        // "foo-1.2-3.dist.src.rpm" -> "foo"
         size_t p = x.rfind('-');
         if (p != std::string::npos && p + 1 < x.size() && isdigit((unsigned char)x[p + 1]))
             names.push_back(x.substr(0, p));

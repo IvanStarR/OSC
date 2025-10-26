@@ -14,13 +14,12 @@
 #include <string>
 #include <vector>
 #include <optional>
-#include <unistd.h> // getpid()
+#include <unistd.h> 
 #include <spdlog/spdlog.h>
 
 using namespace uringkv;
 namespace fs = std::filesystem;
 
-// ----------------- helpers -----------------
 static std::string mktemp_dir(const char* prefix) {
   auto base = fs::temp_directory_path();
   for (int i=0;i<1000;++i) {
@@ -45,14 +44,12 @@ static std::vector<fs::path> list_wals(const fs::path& wal_dir){
   return out;
 }
 
-// ========================= ITERATION 1 TESTS ==============================
 
 TEST_CASE("iter1: init storage layout") {
   spdlog::set_level(spdlog::level::warn);
 
   const auto dir = mktemp_dir("uringkv_init_");
 
-  // держим KV в отдельном scope, чтобы деструктор отработал ДО файловых проверок
   {
     KVOptions opts;
     opts.path = dir;
@@ -60,9 +57,9 @@ TEST_CASE("iter1: init storage layout") {
     opts.uring_queue_depth = 256;
     opts.wal_max_segment_bytes = 64ull * 1024 * 1024;
     opts.sst_flush_threshold_bytes = 4ull * 1024 * 1024;
-    opts.final_flush_on_close = false;   // ничего не флашим в этом smoke
+    opts.final_flush_on_close = false;   
     opts.table_cache_capacity = 64;
-    opts.background_compaction = false;  // итерация 1 — без фона
+    opts.background_compaction = false; 
     opts.l0_compact_threshold = 6;
 
     KV kv(opts);
@@ -84,7 +81,7 @@ TEST_CASE("iter1: basic put/get/del") {
     opts.path = dir;
     opts.use_uring = false;
     opts.sst_flush_threshold_bytes = 4ull * 1024 * 1024;
-    opts.final_flush_on_close = false;   // деструктор не делает тяжёлый flush
+    opts.final_flush_on_close = false;   
     opts.background_compaction = false;
 
     KV kv(opts);

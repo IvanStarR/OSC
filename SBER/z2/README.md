@@ -129,9 +129,6 @@ Run all tests
 Verbose
   ctest -V
 
-Run test binary directly (from build dir)
-  ./bin/uringkv_tests -l
-  ./bin/uringkv_tests -t sst
 
 
 
